@@ -1,0 +1,25 @@
+name: mybrew import formula
+description: Copy a homebrew/core formula (checksum-verified, bottle block removed) into the calling tap.
+
+inputs:
+  formula:
+    description: homebrew/core formula name
+    required: true
+  tap-dir:
+    description: Path to the checked-out tap repository
+    default: ${{ github.workspace }}
+
+outputs:
+  version:
+    description: Upstream stable version
+    value: ${{ steps.import.outputs.version }}
+  path:
+    description: Path of the written formula file
+    value: ${{ steps.import.outputs.path }}
+
+runs:
+  using: composite
+  steps:
+    - id: import
+      shell: bash
+      run: python3 "${{ github.action_path }}/../../scripts/import_formula.py" "${{ inputs.formula }}" "${{ inputs.tap-dir }}" >> "$GITHUB_OUTPUT"

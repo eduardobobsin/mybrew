@@ -1,0 +1,45 @@
+name: mybrew publish to GitHub Release
+description: Upload bottles to a release of the calling repository, then commit the updated formula and registry.
+
+inputs:
+  formula:
+    description: Formula name inside the calling tap
+    required: true
+  bottle-dir:
+    description: Directory with the bottle tarballs and JSON from build-bottle
+    required: true
+  release-tag:
+    description: Release that holds all bottles
+    default: bottles
+  tap-dir:
+    description: Path to the checked-out tap repository
+    default: ${{ github.workspace }}
+  token:
+    description: Token with contents:write on the calling repository
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Upload bottles
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        TAG: ${{ inputs.release-tag }}
+      run: |
+        gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 ||
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --title "Bottles" \
+            --notes "Homebrew bottles built by mybrew. Each formula in Formula/ points here."
+        gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber "${{ inputs.bottle-dir }}"/*.tar.gz
+
+    - name: Commit formula and registry
+      shell: bash
+      working-directory: ${{ inputs.tap-dir }}
+      run: |
+        python3 "${{ github.action_path }}/../../scripts/update_registry.py" registry/bottles.json "${{ inputs.bottle-dir }}"/*.bottle.json
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add "Formula/${{ inputs.formula }}.rb" registry/bottles.json
+        git commit -m "${{ inputs.formula }}: add bottle"
+        git pull --rebase
+        git push

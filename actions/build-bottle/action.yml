@@ -1,0 +1,83 @@
+name: mybrew build bottle
+description: Build a bottle for a formula in the calling tap and merge its bottle block into the formula.
+
+inputs:
+  formula:
+    description: Formula name inside the calling tap
+    required: true
+  root-url:
+    description: Base URL the bottle will be downloaded from
+    required: true
+  tap-dir:
+    description: Path to the checked-out tap repository
+    default: ${{ github.workspace }}
+  output-dir:
+    description: Where to write the bottle tarball and JSON
+    default: ${{ runner.temp }}/bottles
+
+outputs:
+  tap:
+    description: Tap name, e.g. owner/mybrew
+    value: ${{ steps.tap.outputs.tap }}
+  tag:
+    description: Bottle tag that was built, e.g. sequoia
+    value: ${{ steps.bottle.outputs.tag }}
+  output-dir:
+    description: Directory holding the bottle tarball (renamed to its upload filename) and JSON
+    value: ${{ inputs.output-dir }}
+
+runs:
+  using: composite
+  steps:
+    - id: tap
+      name: Register checkout as a tap
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+      run: |
+        owner="$(echo "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
+        repo="${GITHUB_REPOSITORY##*/}"
+        tap="${owner}/${repo#homebrew-}"
+        tap_path="$(brew --repository)/Library/Taps/${owner}/${repo}"
+        mkdir -p "$(dirname "$tap_path")"
+        ln -sfn "$(cd "${{ inputs.tap-dir }}" && pwd)" "$tap_path"
+        brew trust --tap "$tap"
+        echo "tap=$tap" >> "$GITHUB_OUTPUT"
+
+    - name: Build from source for bottling
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+        HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      run: brew install --build-bottle --verbose "${{ steps.tap.outputs.tap }}/${{ inputs.formula }}"
+
+    - name: Test
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+      run: brew test --verbose "${{ steps.tap.outputs.tap }}/${{ inputs.formula }}"
+
+    - id: bottle
+      name: Bottle and merge
+      shell: bash
+      env:
+        HOMEBREW_NO_AUTO_UPDATE: "1"
+      run: |
+        mkdir -p "${{ inputs.output-dir }}"
+        cd "${{ inputs.output-dir }}"
+        brew bottle --json --root-url="${{ inputs.root-url }}" "${{ steps.tap.outputs.tap }}/${{ inputs.formula }}"
+        brew bottle --merge --write --no-commit ./*.bottle.json
+
+        # brew writes the tarball under its local name; uploads must use the
+        # name the formula will request.
+        python3 - <<'EOF'
+        import json, os, pathlib
+        for path in pathlib.Path(".").glob("*.bottle.json"):
+            for entry in json.loads(path.read_text()).values():
+                for tag, bottle in entry["bottle"]["tags"].items():
+                    if bottle["local_filename"] != bottle["filename"]:
+                        os.rename(bottle["local_filename"], bottle["filename"])
+                    with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+                        out.write(f"tag={tag}\n")
+        EOF
+        ls -la
