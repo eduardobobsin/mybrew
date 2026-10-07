@@ -32,6 +32,11 @@ done
 [[ -n "$REPO" && -n "$BUCKET" ]] || { sed -n '2,13p' "$0"; exit 2; }
 
 OIDC_HOST=token.actions.githubusercontent.com
+# GitHub may issue immutable subjects (repo:owner@id/name@id), so ask it for
+# the prefix this repo's tokens actually carry.
+SUB_PREFIX=$(gh api "repos/${REPO}/actions/oidc/customization/sub" --jq '.sub_claim_prefix // empty' 2>/dev/null || true)
+SUB_PREFIX=${SUB_PREFIX:-repo:${REPO}}
+SUBJECT="${SUB_PREFIX}:ref:refs/heads/main"
 ROOT_URL="https://${BUCKET}.s3.${REGION}.amazonaws.com/${PREFIX}/sequoia"
 
 aws() { command aws "${PROFILE_ARGS[@]}" --region "$REGION" --output text "$@"; }
@@ -61,6 +66,7 @@ bucket=$(probe s3api head-bucket --bucket "$BUCKET")
 printf '  OIDC provider %-45s %s\n' "$OIDC_HOST" "$provider"
 printf '  IAM role      %-45s %s\n' "$ROLE" "$role"
 printf '  S3 bucket     %-45s %s\n' "$BUCKET" "$bucket"
+printf '  OIDC subject  %s\n' "$SUBJECT"
 
 if [[ "$provider" == denied || "$role" == denied || "$bucket" == denied ]]; then
   cat >&2 <<EOF
@@ -76,7 +82,7 @@ EOF
 fi
 
 if $CHECK; then
-  printf '\nCheck only. Would publish bottles to %s\nand let %s (main branch) assume %s.\n' "$ROOT_URL" "$REPO" "$ROLE_ARN"
+  printf '\nCheck only. Would publish bottles to %s\nand let %s assume %s.\n' "$ROOT_URL" "$SUBJECT" "$ROLE_ARN"
   exit 0
 fi
 
@@ -130,7 +136,7 @@ TRUST=$(cat <<EOF
     "Condition": {
       "StringEquals": {
         "${OIDC_HOST}:aud": "sts.amazonaws.com",
-        "${OIDC_HOST}:sub": "repo:${REPO}:ref:refs/heads/main"
+        "${OIDC_HOST}:sub": "${SUBJECT}"
       }
     }
   }]
