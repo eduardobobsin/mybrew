@@ -1,0 +1,52 @@
+name: mybrew publish to S3
+description: Upload bottles to S3 using GitHub OIDC, check they are publicly downloadable, then commit the updated formula and registry.
+
+inputs:
+  formula:
+    description: Formula name inside the calling tap
+    required: true
+  bottle-dir:
+    description: Directory with the bottle tarballs and JSON from build-bottle
+    required: true
+  bucket:
+    description: S3 bucket name
+    required: true
+  key-prefix:
+    description: Key prefix the bottles are stored under; must match the formula's root_url path
+    default: bottles/sequoia
+  region:
+    description: AWS region of the bucket
+    required: true
+  role-arn:
+    description: IAM role to assume via OIDC (job needs id-token:write)
+    required: true
+  root-url:
+    description: Public base URL; used to verify each upload is downloadable
+    required: true
+  tap-dir:
+    description: Path to the checked-out tap repository
+    default: ${{ github.workspace }}
+
+runs:
+  using: composite
+  steps:
+    - uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.role-arn }}
+        aws-region: ${{ inputs.region }}
+        role-session-name: mybrew-${{ github.run_id }}
+
+    - name: Upload bottles
+      shell: bash
+      run: |
+        for file in "${{ inputs.bottle-dir }}"/*.tar.gz; do
+          aws s3 cp "$file" "s3://${{ inputs.bucket }}/${{ inputs.key-prefix }}/$(basename "$file")" \
+            --content-type application/gzip --only-show-errors
+          curl -fsSIL "${{ inputs.root-url }}/$(basename "$file")" -o /dev/null
+          echo "published ${{ inputs.root-url }}/$(basename "$file")"
+        done
+
+    - name: Commit formula and registry
+      shell: bash
+      working-directory: ${{ inputs.tap-dir }}
+      run: '"${{ github.action_path }}/../../scripts/commit_formula.sh" "${{ inputs.formula }}" "${{ inputs.bottle-dir }}"'

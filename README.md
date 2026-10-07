@@ -15,6 +15,7 @@ See [eduardobobsin/homebrew-mybrew](https://github.com/eduardobobsin/homebrew-my
 | `actions/import-formula` | Copies a homebrew/core formula at the API's commit, verifies its SHA-256, drops the upstream bottle block |
 | `actions/build-bottle` | Registers the checkout as a tap, `brew install --build-bottle`, `brew test`, `brew bottle --json`, `brew bottle --merge --write` |
 | `actions/publish-github-release` | Uploads bottles to a release, updates `registry/bottles.json`, commits the formula |
+| `actions/publish-s3` | Assumes an IAM role via GitHub OIDC, uploads bottles to S3, checks they are publicly downloadable, commits the formula |
 
 ## Roadmap
 

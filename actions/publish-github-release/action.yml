@@ -35,11 +35,4 @@ runs:
     - name: Commit formula and registry
       shell: bash
       working-directory: ${{ inputs.tap-dir }}
-      run: |
-        python3 "${{ github.action_path }}/../../scripts/update_registry.py" registry/bottles.json "${{ inputs.bottle-dir }}"/*.bottle.json
-        git config user.name "github-actions[bot]"
-        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-        git add "Formula/${{ inputs.formula }}.rb" registry/bottles.json
-        git commit -m "${{ inputs.formula }}: add bottle"
-        git pull --rebase
-        git push
+      run: '"${{ github.action_path }}/../../scripts/commit_formula.sh" "${{ inputs.formula }}" "${{ inputs.bottle-dir }}"'
