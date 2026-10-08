@@ -20,17 +20,31 @@ clear_name() {
 }
 
 # The plan is read on fd 3: brew reads stdin and would swallow it otherwise.
+# brew install fails when a formula built fine but cannot be linked because a
+# preinstalled runner formula owns the same files (openssl@1.1 owns
+# bin/openssl). Runners are disposable, so overwrite those links; a formula
+# that did not build leaves no install receipt and still fails.
+install_or_relink() {
+  local formula="$1"; shift
+  if brew install "$@"; then return 0; fi
+  local name="${formula##*/}" receipt
+  receipt=$(ls "$(brew --cellar)/${name}"/*/INSTALL_RECEIPT.json 2>/dev/null | tail -1)
+  [[ -n "$receipt" ]] || return 1
+  echo "::warning::${name} installed but did not link; overwriting conflicting links on this runner"
+  brew link --overwrite "$formula"
+}
+
 while read -r formula source <&3; do
   case "$source" in
     mybrew)
       echo "::group::${formula} (mybrew bottle)"
       clear_name "$formula"
-      brew install "${tap}/${formula}"
+      install_or_relink "${tap}/${formula}" "${tap}/${formula}"
       ;;
     build)
       echo "::group::${formula} (build)"
       clear_name "$formula"
-      brew install --build-bottle --verbose "${tap}/${formula}"
+      install_or_relink "${tap}/${formula}" --build-bottle --verbose "${tap}/${formula}"
       brew test --verbose "${tap}/${formula}"
       (cd "$out" && brew bottle --json --root-url="$root_url" "${tap}/${formula}" &&
         brew bottle --merge --write --no-commit "./${formula}--"*.bottle.json)

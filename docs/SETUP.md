@@ -64,7 +64,7 @@ dispatch, so pull requests from forks cannot reach your runner.
 
 ## Updating
 
-The instance workflow pins the engine to a release tag (`@v0.7.2`). To upgrade, change the tag
+The instance workflow pins the engine to a release tag (`@v0.7.3`). To upgrade, change the tag
 in `.github/workflows/build.yml` and the `url`/`sha256` in `Formula/mybrew.rb`.
 
 ## Troubleshooting

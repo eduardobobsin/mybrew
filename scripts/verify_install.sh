@@ -8,6 +8,20 @@ export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_AUTOR
 tap="$1"; shift
 formulae=("$@")
 
+# brew install fails when a formula built fine but cannot be linked because a
+# preinstalled runner formula owns the same files (openssl@1.1 owns
+# bin/openssl). Runners are disposable, so overwrite those links; a formula
+# that did not build leaves no install receipt and still fails.
+install_or_relink() {
+  local formula="$1"; shift
+  if brew install "$@"; then return 0; fi
+  local name="${formula##*/}" receipt
+  receipt=$(ls "$(brew --cellar)/${name}"/*/INSTALL_RECEIPT.json 2>/dev/null | tail -1)
+  [[ -n "$receipt" ]] || return 1
+  echo "::warning::${name} installed but did not link; overwriting conflicting links on this runner"
+  brew link --overwrite "$formula"
+}
+
 brew tap "$tap"
 brew trust --tap "$tap"
 
@@ -15,7 +29,7 @@ for formula in "${formulae[@]}"; do
   if brew list --formula --versions "$formula" >/dev/null 2>&1; then
     brew uninstall --formula --ignore-dependencies --force "$formula"
   fi
-  brew install "${tap}/${formula}"
+  install_or_relink "${tap}/${formula}" "${tap}/${formula}"
 done
 
 status=0
