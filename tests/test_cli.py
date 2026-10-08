@@ -418,7 +418,18 @@ class ActiveRunsTest(unittest.TestCase):
             {"databaseId": 2, "displayTitle": "Build cmake", "createdAt": "2026-10-08T01:05:00Z", "status": "queued"},
             {"databaseId": 3, "displayTitle": "Build xz", "createdAt": "2026-10-08T01:05:00Z", "status": "completed"},
         ]
-        self.assertEqual(active_runs(runs), {"cmake": 2})
+        self.assertEqual(active_runs(runs), {"cmake": (2, "2026-10-08T01:05:00Z")})
+
+    def test_attached_run_keeps_its_real_start(self):
+        github = FakeGitHub()
+        github.created["cmake"] = 7
+        github.runs = lambda: [{"databaseId": 7, "displayTitle": "Build cmake",
+                                "createdAt": "2026-10-08T12:43:00Z", "status": "in_progress"}]
+        scheduler = Scheduler(LIBZIP, github, 4, clock=lambda: 9e9)
+        scheduler.attach()
+        states, started, _, _ = scheduler.snapshot()
+        self.assertEqual(states["cmake"], "dispatched")
+        self.assertEqual(started["cmake"], datetime(2026, 10, 8, 12, 43, tzinfo=timezone.utc).timestamp())
 
 
 if __name__ == "__main__":

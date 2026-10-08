@@ -175,15 +175,16 @@ def find_run(runs: list[dict], formula: str, since: datetime) -> int | None:
     return max(matches, key=lambda r: r["createdAt"])["databaseId"] if matches else None
 
 
-def active_runs(runs: list[dict]) -> dict[str, int]:
-    """formula -> newest unfinished run, for attaching instead of duplicating."""
-    result: dict[str, tuple[str, int]] = {}
+def active_runs(runs: list[dict]) -> dict[str, tuple[int, str]]:
+    """formula -> (run id, created at) of its newest unfinished run, for attaching
+    instead of duplicating; the creation time keeps elapsed times honest."""
+    result: dict[str, tuple[int, str]] = {}
     for r in runs:
         if r["status"] != "completed" and r["displayTitle"].startswith("Build "):
             name = r["displayTitle"][len("Build "):]
-            if name not in result or r["createdAt"] > result[name][0]:
-                result[name] = (r["createdAt"], r["databaseId"])
-    return {name: run_id for name, (_, run_id) in result.items()}
+            if name not in result or r["createdAt"] > result[name][1]:
+                result[name] = (r["databaseId"], r["createdAt"])
+    return result
 
 
 # --- build scheduling (pure) ------------------------------------------------
@@ -456,9 +457,9 @@ class Scheduler:
 
     def attach(self) -> None:
         """Pick up runs already in flight, e.g. after Ctrl-C and a rerun."""
-        for name, run_id in active_runs(self.github.runs()).items():
+        for name, (run_id, created) in active_runs(self.github.runs()).items():
             if name in self.states:
-                self.states[name], self.runs[name], self.started[name] = "dispatched", run_id, self.clock()
+                self.states[name], self.runs[name], self.started[name] = "dispatched", run_id, iso_epoch(created)
 
     def poll(self) -> None:
         with self.lock:
