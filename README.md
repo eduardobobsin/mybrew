@@ -28,12 +28,14 @@ dependencies are published, up to `MYBREW_PARALLEL` (default 4) at a time, with 
 ```
 ==> Building 4 bottle(s) on github.com/you/homebrew-mybrew
   ✔ xz      built in 3m12s
-  ⟳ cmake   building 14m02s  (build-time)
+  ⠹ cmake   building [5/10] 14m02s  (build-time)
   ⏸ lz4     waiting for cmake
   ⏸ libzip  waiting for lz4
   ✔ zstd    official bottle
 ```
 
+In a terminal the block redraws in place with a spinner and the running job's step count;
+in logs and pipes (or with `NO_COLOR`/`TERM=dumb`) it prints one line per change instead.
 A failed formula skips only what depends on it; finished bottles stay cached. Ctrl-C leaves running
 builds alone, and the next `mybrew install` attaches to them.
 

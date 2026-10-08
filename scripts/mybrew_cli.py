@@ -33,6 +33,9 @@ from plan_build import load_registry, plan
 
 WORKFLOW = "build.yml"
 POLL_SECONDS = 10
+FRAME_SECONDS = 0.1
+SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+SPINNER_ASCII = "|/-\\"
 DEFAULT_PARALLEL = 4
 
 
@@ -205,6 +208,19 @@ def phase_of(view: dict) -> str:
     return current
 
 
+def step_progress(view: dict) -> tuple[int, int] | None:
+    """(finished, total) steps of the job currently running, if any."""
+    for job in view.get("jobs", []):
+        if job["status"] == "in_progress" and job.get("steps"):
+            done = sum(1 for step in job["steps"] if step["status"] == "completed")
+            return done, len(job["steps"])
+    return None
+
+
+def spinner_frames(encoding: str | None) -> str:
+    return SPINNER if "utf" in (encoding or "").lower() else SPINNER_ASCII
+
+
 ICONS = {DONE: "\033[32m✔\033[0m", FAILED: "\033[31m✘\033[0m", SKIPPED: "\033[33m–\033[0m",
          WAITING: "\033[2m⏸\033[0m"}
 
@@ -215,8 +231,14 @@ def elapsed(seconds: float) -> str:
 
 
 def render(the_plan: dict, deps: dict[str, set[str]], states: dict[str, str],
-           started: dict[str, float], ended: dict[str, float], now: float) -> list[tuple[str, str]]:
-    """(state key, line) per formula; the key changes only when the state does."""
+           started: dict[str, float], ended: dict[str, float], now: float,
+           progress: dict[str, tuple[int, int]] | None = None, spinner: str | None = None) -> list[tuple[str, str]]:
+    """(state key, line) per formula; the key changes only when the state does.
+
+    `spinner` is the current animation frame for running formulae (None draws a
+    static icon); `progress` holds (finished, total) steps of each running job.
+    """
+    progress = progress or {}
     width = max(len(n) for n in the_plan["formulae"])
     lines = []
     for name, info in the_plan["formulae"].items():
@@ -234,8 +256,9 @@ def render(the_plan: dict, deps: dict[str, set[str]], states: dict[str, str],
         elif state in (DONE, FAILED):
             text = f"{'built' if state == DONE else 'failed'} in {elapsed(ended[name] - started[name])}"
         else:
-            text = f"{state} {elapsed(now - started[name])}"
-        icon = ICONS.get(state, "\033[34m⟳\033[0m")
+            steps = f" [{progress[name][0]}/{progress[name][1]}]" if name in progress else ""
+            text = f"{state}{steps} {elapsed(now - started[name])}"
+        icon = ICONS.get(state, f"\033[34m{spinner or '⟳'}\033[0m")
         key = f"{name}:{state}:{text if state == WAITING else ''}"
         lines.append((key, f"  {icon} {name:<{width}}  {text}{note}"))
     return lines
@@ -258,8 +281,11 @@ def list_runs(repo: str) -> list[dict]:
 class Display:
     """Redraws the status block in place on a terminal; prints changes otherwise."""
 
-    def __init__(self, stream=sys.stdout):
+    def __init__(self, stream=sys.stdout, env: dict | None = None):
+        env = os.environ if env is None else env
         self.stream, self.tty, self.drawn, self.printed = stream, stream.isatty(), 0, set()
+        self.animate = self.tty and not env.get("NO_COLOR") and env.get("TERM") != "dumb"
+        self.frames = spinner_frames(getattr(stream, "encoding", None))
 
     def show(self, rows: list[tuple[str, str]]) -> None:
         if self.tty:
@@ -284,6 +310,7 @@ def build_missing(repo: str, the_plan: dict, parallel: int) -> None:
     since: dict[str, datetime] = {}
     started: dict[str, float] = {}
     ended: dict[str, float] = {}
+    progress: dict[str, tuple[int, int]] = {}
     display = Display()
 
     for name, run_id in active_runs(list_runs(repo)).items():
@@ -291,7 +318,9 @@ def build_missing(repo: str, the_plan: dict, parallel: int) -> None:
             states[name], runs[name], started[name] = "dispatched", run_id, time.time()
 
     try:
+        frame = 0
         while True:
+            poll_at = time.time() + POLL_SECONDS
             for name in advance(deps, states, parallel):
                 since[name] = datetime.now(timezone.utc) - timedelta(seconds=30)
                 verify = "true" if name == the_plan["target"] else "false"
@@ -313,11 +342,21 @@ def build_missing(repo: str, the_plan: dict, parallel: int) -> None:
                 states[name] = phase_of(view)
                 if states[name] in (DONE, FAILED):
                     ended[name] = time.time()
+                    progress.pop(name, None)
+                elif (steps := step_progress(view)):
+                    progress[name] = steps
 
-            display.show(render(the_plan, deps, states, started, ended, time.time()))
+            # Redraw between polls: the spinner and timers move, GitHub is asked
+            # only every POLL_SECONDS.
+            while True:
+                spinner = display.frames[frame % len(display.frames)] if display.animate else None
+                display.show(render(the_plan, deps, states, started, ended, time.time(), progress, spinner))
+                frame += 1
+                if finished(states) or time.time() >= poll_at:
+                    break
+                time.sleep(FRAME_SECONDS if display.animate else max(poll_at - time.time(), 0))
             if finished(states):
                 break
-            time.sleep(POLL_SECONDS)
     except KeyboardInterrupt:
         raise MybrewError("interrupted; builds already started keep running on GitHub. "
                           "Run mybrew again to pick them up.") from None

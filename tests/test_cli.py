@@ -9,7 +9,7 @@ import io  # noqa: E402
 
 from mybrew_cli import (  # noqa: E402
     DONE, FAILED, SKIPPED, WAITING, Display, MybrewError, active_runs, advance, brew_env, find_run, finished,
-    graph, install_steps, phase_of, render,
+    graph, install_steps, phase_of, render, spinner_frames, step_progress,
 )
 
 TAP = "me/mybrew"
@@ -175,6 +175,33 @@ class RenderTest(unittest.TestCase):
         display.show(render(LIBZIP, deps, states, {"xz": 0, "cmake": 0}, {}, 10))
         display.show(render(LIBZIP, deps, states, {"xz": 0, "cmake": 0}, {}, 20))
         self.assertEqual(out.getvalue().count("building"), 2)
+
+
+class AnimationTest(unittest.TestCase):
+    def test_step_progress_of_running_job(self):
+        steps = [{"status": "completed"}] * 4 + [{"status": "in_progress"}] + [{"status": "queued"}] * 5
+        view = {"jobs": [{"name": "build", "status": "in_progress", "steps": steps}]}
+        self.assertEqual(step_progress(view), (4, 10))
+        self.assertIsNone(step_progress({"jobs": [{"name": "build", "status": "queued", "steps": []}]}))
+
+    def test_running_line_shows_spinner_frame_and_steps(self):
+        deps = graph(LIBZIP)
+        states = {"xz": "building", "cmake": WAITING, "lz4": WAITING, "libzip": WAITING}
+        rows = render(LIBZIP, deps, states, {"xz": 0}, {}, 75, {"xz": (4, 10)}, "⠹")
+        line = next(line for _, line in rows if " xz " in line)
+        self.assertIn("⠹", line)
+        self.assertIn("building [4/10] 1m15s", line)
+
+    def test_step_changes_do_not_add_log_lines(self):
+        deps, states = graph(LIBZIP), {"xz": "building", "cmake": WAITING, "lz4": WAITING, "libzip": WAITING}
+        first = dict(render(LIBZIP, deps, states, {"xz": 0}, {}, 10, {"xz": (3, 10)}, "⠋"))
+        second = dict(render(LIBZIP, deps, states, {"xz": 0}, {}, 20, {"xz": (5, 10)}, "⠙"))
+        self.assertEqual(first.keys(), second.keys())
+
+    def test_ascii_fallback_and_no_animation_off_terminal(self):
+        self.assertEqual(spinner_frames("US-ASCII"), "|/-\\")
+        self.assertEqual(spinner_frames("utf-8")[0], "⠋")
+        self.assertFalse(Display(io.StringIO(), {}).animate)
 
 
 class ActiveRunsTest(unittest.TestCase):
