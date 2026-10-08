@@ -39,8 +39,23 @@ class InstallStepsTest(unittest.TestCase):
         self.assertEqual(steps, [["brew", "install", "me/mybrew/calc"]])
 
     def test_mismatched_core_dependency_is_not_touched(self):
-        with self.assertRaisesRegex(MybrewError, "brew uninstall --ignore-dependencies readline"):
+        with self.assertRaisesRegex(MybrewError, "--replace"):
             self.steps(CALC, {"readline": {"version": "8.2", "tap": "homebrew/core"}})
+
+    def test_replace_swaps_mismatched_core_dependency(self):
+        steps = install_steps(CALC, TAP, {"readline": {"version": "8.2", "tap": "homebrew/core"}}.get, replace=True)
+        self.assertEqual(steps, [["brew", "uninstall", "--formula", "--ignore-dependencies", "readline"],
+                                 ["brew", "install", "me/mybrew/readline"],
+                                 ["brew", "install", "me/mybrew/calc"]])
+
+    def test_replace_keeps_matching_core_dependency(self):
+        steps = install_steps(CALC, TAP, {"readline": {"version": "8.3", "tap": "homebrew/core"}}.get, replace=True)
+        self.assertEqual(steps, [["brew", "install", "me/mybrew/calc"]])
+
+    def test_replace_switches_target_from_another_tap(self):
+        installed = {"readline": {"version": "8.3", "tap": TAP}, "calc": {"version": "2.16", "tap": "homebrew/core"}}
+        steps = install_steps(CALC, TAP, installed.get, replace=True)
+        self.assertEqual(steps[0], ["brew", "uninstall", "--formula", "--ignore-dependencies", "calc"])
 
     def test_outdated_mybrew_dependency_is_upgraded(self):
         steps = self.steps(CALC, {"readline": {"version": "8.2", "tap": TAP}})
@@ -55,7 +70,7 @@ class InstallStepsTest(unittest.TestCase):
         self.assertEqual(self.steps(the_plan), [["brew", "install", "me/mybrew/bar"], ["brew", "install", "foo"]])
 
     def test_target_from_another_tap_is_refused(self):
-        with self.assertRaisesRegex(MybrewError, "brew uninstall calc"):
+        with self.assertRaisesRegex(MybrewError, "--replace"):
             self.steps(CALC, {"readline": {"version": "8.3", "tap": TAP}, "calc": {"version": "2.17", "tap": "homebrew/core"}})
 
     def test_build_time_only_formulae_are_not_installed(self):
@@ -70,6 +85,9 @@ class InstallStepsTest(unittest.TestCase):
 class BrewEnvTest(unittest.TestCase):
     def test_defaults_auto_update_off(self):
         self.assertEqual(brew_env({})["HOMEBREW_NO_AUTO_UPDATE"], "1")
+
+    def test_defaults_autoremove_off(self):
+        self.assertEqual(brew_env({})["HOMEBREW_NO_AUTOREMOVE"], "1")
 
     def test_respects_users_choice(self):
         self.assertEqual(brew_env({"HOMEBREW_NO_AUTO_UPDATE": "0"})["HOMEBREW_NO_AUTO_UPDATE"], "0")

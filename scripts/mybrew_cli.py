@@ -6,6 +6,9 @@
 
 Options for install:
   --no-build    fail instead of starting a build on a cache miss
+  --replace     swap a formula installed from another tap (e.g. homebrew/core)
+                at a different version for the mybrew one; lists what uses it
+                first. Without it mybrew never uninstalls anything.
 
 On a cache miss each formula that needs a bottle is built as its own GitHub
 run, as soon as its dependencies are published, several at a time. Ctrl-C
@@ -100,12 +103,13 @@ def installed_kegs(cellar: Path, name: str) -> dict | None:
 
 # --- decisions (pure) ------------------------------------------------------
 
-def install_steps(the_plan: dict, tap: str, installed) -> list[list[str]]:
+def install_steps(the_plan: dict, tap: str, installed, replace: bool = False) -> list[list[str]]:
     """brew commands that install the plan's target without compiling.
 
     `installed(name)` returns {"version", "tap"} or None. mybrew formulae are
     drop-in replacements for core ones, so an already-installed keg of the
-    right version satisfies a dependency whichever tap it came from.
+    right version satisfies a dependency whichever tap it came from. A keg of
+    another version from another tap is only swapped out when `replace` is set.
     """
     target = the_plan["target"]
     formulae = the_plan["formulae"]
@@ -122,11 +126,14 @@ def install_steps(the_plan: dict, tap: str, installed) -> list[list[str]]:
         elif current["version"] != info["version"]:
             if current["tap"] == tap:
                 steps.append(["brew", "upgrade", f"{tap}/{name}"])
+            elif replace:
+                steps += [["brew", "uninstall", "--formula", "--ignore-dependencies", name],
+                          ["brew", "install", f"{tap}/{name}"]]
             else:
                 raise MybrewError(
                     f"{name} {current['version']} is installed from {current['tap']}, but {target} needs "
-                    f"{info['version']} from {tap}. Replace it with `brew uninstall --ignore-dependencies "
-                    f"{name}` and run mybrew again.")
+                    f"{info['version']} from {tap}. Run mybrew again with --replace to swap it, or "
+                    f"`brew uninstall --ignore-dependencies {name}` yourself.")
 
     info = formulae[target]
     current = installed(target)
@@ -135,8 +142,11 @@ def install_steps(the_plan: dict, tap: str, installed) -> list[list[str]]:
     elif current and current["tap"] == tap and current["version"] == info["version"]:
         pass
     elif current and current["tap"] != tap:
-        raise MybrewError(f"{target} is installed from {current['tap']}; "
-                          f"`brew uninstall {target}` first to switch it to {tap}")
+        if not replace:
+            raise MybrewError(f"{target} is installed from {current['tap']}; run mybrew again with "
+                              f"--replace to switch it to {tap}")
+        steps += [["brew", "uninstall", "--formula", "--ignore-dependencies", target],
+                  ["brew", "install", f"{tap}/{target}"]]
     else:
         steps.append(["brew", "install", f"{tap}/{target}"])
     return steps
@@ -470,7 +480,8 @@ def cmd_plan(tap: Tap, formulae: list[str]) -> None:
             print(f"    {line}")
 
 
-def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, parallel: int) -> None:
+def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, parallel: int,
+                replace: bool = False) -> None:
     for formula in formulae:
         say(f"Checking {formula}")
         the_plan = load_plan(tap, formula)
@@ -486,17 +497,25 @@ def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, 
             for line in describe(the_plan):
                 print(f"    {line}")
 
-        steps = install_steps(the_plan, tap.name, lambda name: installed_kegs(cellar, name))
+        steps = install_steps(the_plan, tap.name, lambda name: installed_kegs(cellar, name), replace)
         if not steps:
             say(f"{formula} is already installed")
         for step in steps:
+            if step[1] == "uninstall":
+                name = step[-1]
+                current = installed_kegs(cellar, name) or {}
+                users = run("brew", "uses", "--installed", name).split()
+                say(f"Replacing {name} {current.get('version', '')} from {current.get('tap', '?')} "
+                    f"with {the_plan['formulae'][name]['version']} from {tap.name}"
+                    + (f" (used by: {', '.join(users)})" if users else ""))
             say(" ".join(step))
             run(*step, capture=False)
 
 
 def brew_env(env: dict) -> dict:
-    """The tap was just refreshed; skip brew's own auto-update unless asked for."""
-    return {"HOMEBREW_NO_AUTO_UPDATE": "1", **env}
+    """The tap was just refreshed; skip brew's own auto-update unless asked for.
+    Never let an uninstall mybrew runs autoremove unrelated formulae."""
+    return {"HOMEBREW_NO_AUTO_UPDATE": "1", "HOMEBREW_NO_AUTOREMOVE": "1", **env}
 
 
 def main(argv: list[str]) -> int:
@@ -508,7 +527,7 @@ def main(argv: list[str]) -> int:
         os.execvp("brew", ["brew", *argv])
 
     names = [a for a in rest if not a.startswith("-")]
-    unknown = [a for a in rest if a.startswith("-") and a != "--no-build"]
+    unknown = [a for a in rest if a.startswith("-") and a not in ("--no-build", "--replace")]
     if unknown or not names:
         print(__doc__.strip(), file=sys.stderr)
         return 2
@@ -520,7 +539,8 @@ def main(argv: list[str]) -> int:
         else:
             cellar = Path(run("brew", "--cellar").strip())
             parallel = int(os.environ.get("MYBREW_PARALLEL", DEFAULT_PARALLEL))
-            cmd_install(tap, cellar, names, allow_build="--no-build" not in rest, parallel=parallel)
+            cmd_install(tap, cellar, names, allow_build="--no-build" not in rest, parallel=parallel,
+                        replace="--replace" in rest)
     except MybrewError as error:
         print(f"\033[1;31mError:\033[0m {error}", file=sys.stderr)
         return 1

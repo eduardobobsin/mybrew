@@ -73,4 +73,6 @@ in `.github/workflows/build.yml` and the `url`/`sha256` in `Formula/mybrew.rb`.
   tap's formulae before removing it. Trust it for the removal:
   `brew trust --tap <you>/mybrew && brew untap <you>/mybrew && brew untrust --tap <you>/mybrew`.
 - **A formula is "installed from homebrew/core" and mybrew refuses to replace it.** mybrew never
-  uninstalls things you installed elsewhere; it prints the command to do it yourself.
+  uninstalls things you installed elsewhere unless you pass `--replace`
+  (`mybrew install --replace <formula>`), which lists what uses the old version and then swaps it
+  for the mybrew one.
