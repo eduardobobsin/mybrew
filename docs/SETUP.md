@@ -66,3 +66,11 @@ dispatch, so pull requests from forks cannot reach your runner.
 
 The instance workflow pins the engine to a release tag (`@v0.5.0`). To upgrade, change the tag
 in `.github/workflows/build.yml` and the `url`/`sha256` in `Formula/mybrew.rb`.
+
+## Troubleshooting
+
+- **`brew untap` says "Refusing to load formula … from untrusted tap".** Homebrew loads a
+  tap's formulae before removing it. Trust it for the removal:
+  `brew trust --tap <you>/mybrew && brew untap <you>/mybrew && brew untrust --tap <you>/mybrew`.
+- **A formula is "installed from homebrew/core" and mybrew refuses to replace it.** mybrew never
+  uninstalls things you installed elsewhere; it prints the command to do it yourself.

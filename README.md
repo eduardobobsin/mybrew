@@ -44,7 +44,7 @@ Anything else (`mybrew list`, `mybrew upgrade`, ...) is passed to `brew`. Buildi
 | M2 Publish | S3 storage via OIDC, fully automated single formula | done |
 | M3 Dependencies | Recursive private fallback for dependencies without Intel bottles | done (calc→readline, jdupes) |
 | M4 Demand | `mybrew install foo` triggers a build on cache miss | done (v0.4.0) |
-| M5 Platform | Template instance repo so others can deploy their own | in progress |
+| M5 Platform | Template instance repo so others can deploy their own | done (v0.5.0) |
 
 ## Development
 
