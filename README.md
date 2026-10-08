@@ -16,8 +16,8 @@ See [eduardobobsin/homebrew-mybrew](https://github.com/eduardobobsin/homebrew-my
 | `actions/import-formula` | Copies a homebrew/core formula at the API's commit, verifies its SHA-256, drops the upstream bottle block |
 | `actions/build-bottle` | Registers the checkout as a tap; for each planned formula in order: `brew install --build-bottle`, `brew test`, `brew bottle --json`, `brew bottle --merge --write` |
 | `actions/publish-github-release` | Uploads bottles to a release, updates `registry/bottles.json`, commits the formula |
-| `actions/verify-install` | On a fresh runner, installs the planned formulae from the published tap and fails unless all were poured from bottles |
-| `actions/publish-s3` | Assumes an IAM role via GitHub OIDC, uploads bottles to S3, checks they are publicly downloadable, commits the formula |
+| `actions/verify-install` | On a fresh runner, installs the given formulae from the published tap and fails unless all were poured from bottles |
+| `actions/publish-s3` | Treats the build artifact as untrusted: recomputes the plan, validates each bottle JSON and tarball checksum, re-imports formulae from homebrew-core and writes their bottle blocks itself; then uploads to S3 via OIDC and commits |
 
 ## Roadmap
 

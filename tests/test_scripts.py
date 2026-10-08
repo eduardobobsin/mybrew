@@ -4,7 +4,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from import_formula import strip_bottle_block  # noqa: E402
+from assemble_publish import render_block, validate  # noqa: E402
+from import_formula import prepare, strip_bottle_block  # noqa: E402
 from plan_build import plan  # noqa: E402
 from update_registry import record  # noqa: E402
 
@@ -42,6 +43,67 @@ class StripBottleBlockTest(unittest.TestCase):
         self.assertEqual(strip_bottle_block(source), source)
 
 
+class PrepareTest(unittest.TestCase):
+    BLOCK = '  bottle do\n    root_url "https://example.com"\n    sha256 cellar: :any, sequoia: "abc"\n  end'
+
+    def test_replaces_upstream_block_in_place(self):
+        result = prepare(FORMULA, self.BLOCK)
+        self.assertNotIn("arm64_sequoia", result)
+        self.assertLess(result.index("livecheck do"), result.index("bottle do"))
+        self.assertLess(result.index("bottle do"), result.index("def install"))
+
+    def test_inserts_block_when_upstream_has_none(self):
+        result = prepare(strip_bottle_block(FORMULA), self.BLOCK)
+        self.assertLess(result.index("bottle do"), result.index("def install"))
+
+    def test_removes_official_only_stanzas(self):
+        source = FORMULA.replace("  livecheck do", '  no_autobump! because: :requires_manual_review\n\n  livecheck do')
+        self.assertNotIn("no_autobump!", prepare(source))
+
+
+SHA = "a" * 64
+
+
+def bottle_json(name="calc", version="2.17", **overrides):
+    bottle = {"root_url": "https://r", "cellar": "any", "rebuild": 0,
+              "tags": {"sequoia": {"filename": f"{name}-{version}.sequoia.bottle.tar.gz", "sha256": SHA}}}
+    bottle.update(overrides)
+    return {f"me/mybrew/{name}": {"formula": {"pkg_version": version}, "bottle": bottle}}
+
+
+class ValidateTest(unittest.TestCase):
+    def check(self, data, name="calc", version="2.17"):
+        return validate(name, version, "me/mybrew", "https://r", data)
+
+    def test_accepts_well_formed_bottle(self):
+        self.assertEqual(self.check(bottle_json())["key"], "calc-2.17.sequoia.bottle.tar.gz")
+
+    def test_rejects_tampered_fields(self):
+        cases = {
+            "root_url": bottle_json(root_url="https://evil"),
+            "cellar": bottle_json(cellar='"; system "rm -rf /"; "'),
+            "tag": bottle_json(tags={"arm64_sequoia": {"filename": "x", "sha256": SHA}}),
+            "sha": bottle_json(tags={"sequoia": {"filename": "calc-2.17.sequoia.bottle.tar.gz", "sha256": '" + `id` + "'}}),
+            "filename": bottle_json(tags={"sequoia": {"filename": "../../x.tar.gz", "sha256": SHA}}),
+            "rebuild": bottle_json(rebuild="1\n  system 'id'"),
+            "version": bottle_json(version="9.9"),
+            "other formula": bottle_json(name="readline"),
+        }
+        for label, data in cases.items():
+            with self.subTest(label), self.assertRaises(SystemExit):
+                self.check(data)
+
+    def test_url_encodes_at_sign_but_keys_raw_name(self):
+        data = bottle_json("openssl@3", "3.5", tags={"sequoia": {"filename": "openssl%403-3.5.sequoia.bottle.tar.gz", "sha256": SHA}})
+        result = self.check(data, "openssl@3", "3.5")
+        self.assertEqual(result["key"], "openssl@3-3.5.sequoia.bottle.tar.gz")
+
+    def test_renders_block_with_rebuild(self):
+        block = render_block("https://r", {"cellar": "/usr/local/Cellar", "rebuild": 2, "sha256": SHA})
+        self.assertIn("    rebuild 2\n", block)
+        self.assertIn(f'sha256 cellar: "/usr/local/Cellar", sequoia: "{SHA}"', block)
+
+
 class RecordTest(unittest.TestCase):
     def test_records_each_tag(self):
         bottle_json = {
@@ -64,9 +126,13 @@ class RecordTest(unittest.TestCase):
                 "bottle": {"root_url": "https://example.com", "tags": {"sequoia": {"filename": "c", "sha256": "1"}}},
             }
         }
-        plan = {"formulae": {"calc": {"mybrew_dependencies": ["readline"]}}}
+        plan = {"order": ["calc"], "formulae": {"calc": {"mybrew_dependencies": ["readline"]}}}
         registry = record({}, bottle_json, "now", plan)
         self.assertEqual(registry["calc"]["mybrew_dependencies"], ["readline"])
+
+    def test_ignores_bottles_outside_the_plan(self):
+        bottle_json = {"me/mybrew/evil": {"formula": {"pkg_version": "1"}, "bottle": {"root_url": "r", "tags": {}}}}
+        self.assertEqual(record({}, bottle_json, "now", {"order": ["calc"], "formulae": {}}), {})
 
 
 def api(version, deps=(), tags=()):
