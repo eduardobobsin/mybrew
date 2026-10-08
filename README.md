@@ -37,7 +37,7 @@ Anything else (`mybrew list`, `mybrew upgrade`, ...) is passed to `brew`. Buildi
 | M1 Install | Custom tap installs that bottle, no compilation | done |
 | M2 Publish | S3 storage via OIDC, fully automated single formula | done |
 | M3 Dependencies | Recursive private fallback for dependencies without Intel bottles | done (calc→readline, jdupes) |
-| M4 Demand | `mybrew install foo` triggers a build on cache miss | in progress |
+| M4 Demand | `mybrew install foo` triggers a build on cache miss | done (v0.4.0) |
 | M5 Platform | Template instance repo so others can deploy their own | |
 
 ## Development
