@@ -12,10 +12,20 @@ tap="$1" root_url="$2" out="$3" plan="$4"
 mkdir -p "$out"
 
 # A runner image may ship a core formula of the same name; brew refuses to
-# install one name from two taps.
+# install one name from two taps. brew uninstall keeps the formula's config in
+# etc, and a stale config breaks builds that rewrite it (openldap's inreplace
+# of etc/openldap/slapd.conf), so on this disposable runner drop it too.
 clear_name() {
   if brew list --formula --versions "$1" >/dev/null 2>&1; then
     brew uninstall --formula --ignore-dependencies --force "$1"
+    local etc
+    etc="$(brew --prefix)/etc"
+    for dir in "$etc/$1" "$etc/${1%%@*}"; do
+      if [[ -e "$dir" ]]; then
+        echo "removing stale config ${dir} left by the runner image's $1"
+        rm -rf "$dir"
+      fi
+    done
   fi
 }
 
