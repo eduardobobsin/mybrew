@@ -7,7 +7,9 @@
 set -euo pipefail
 
 target="$1" plan="$2"
-python3 "$(dirname "$0")/update_registry.py" registry "$plan"
+stats="$(mktemp)"
+python3 "$(dirname "$0")/build_stats.py" > "$stats"
+python3 "$(dirname "$0")/update_registry.py" registry "$plan" "$stats"
 built=$(python3 -c 'import json, sys; print(" ".join(json.load(open(sys.argv[1]))["order"]))' "$plan")
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

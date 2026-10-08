@@ -10,6 +10,7 @@ import json  # noqa: E402
 import tempfile  # noqa: E402
 
 from plan_build import load_registry, plan, single_violation  # noqa: E402
+from build_stats import build_seconds  # noqa: E402
 from update_registry import entries  # noqa: E402
 
 FORMULA = """class Dos2unix < Formula
@@ -148,6 +149,20 @@ class RegistryTest(unittest.TestCase):
         self.assertEqual(result["calc"]["mybrew_dependencies"], ["readline"])
         self.assertEqual(result["calc"]["bottles"]["sequoia"]["sha256"], "f00")
         self.assertTrue(result["cmake"]["build_time_only"])
+
+    def test_build_seconds_recorded_only_for_single_formula_runs(self):
+        single = {**self.PLAN, "order": ["calc"]}
+        self.assertEqual(entries(single, {}, "now", {"build_seconds": 300})["calc"]["build_seconds"], 300)
+        self.assertNotIn("build_seconds", entries(self.PLAN, {}, "now", {"build_seconds": 300})["calc"])
+
+    def test_previous_build_seconds_survive_a_multi_formula_run(self):
+        previous = {"calc": {"build_seconds": 120}}
+        self.assertEqual(entries(self.PLAN, previous, "now", {"build_seconds": 999})["calc"]["build_seconds"], 120)
+
+    def test_build_seconds_from_jobs_api(self):
+        jobs = [{"name": "build", "started_at": "2026-10-08T12:00:00Z", "completed_at": "2026-10-08T12:16:30Z"},
+                {"name": "publish", "started_at": "2026-10-08T12:17:00Z", "completed_at": None}]
+        self.assertEqual(build_seconds(jobs), 990)
 
     def test_load_registry_merges_legacy_file_and_per_formula_files(self):
         with tempfile.TemporaryDirectory() as d:

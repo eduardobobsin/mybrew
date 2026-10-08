@@ -9,7 +9,7 @@ import io  # noqa: E402
 
 from mybrew_cli import (  # noqa: E402
     DONE, FAILED, SKIPPED, WAITING, Display, MybrewError, active_runs, advance, brew_env, find_run, finished,
-    Scheduler, core_name, graph, install_steps, merge_plans, unique, phase_of, render, spinner_frames, step_progress,
+    Scheduler, core_name, graph, install_steps, merge_plans, unique, fit, phase_of, render, spinner_frames, truncate,
 )
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -189,46 +189,108 @@ class PhaseTest(unittest.TestCase):
 
 
 class RenderTest(unittest.TestCase):
+    def rows(self, states, live=None, history=None, now=840):
+        return render(LIBZIP, graph(LIBZIP), states, {"xz": 0, "cmake": 0, "lz4": 0, "libzip": 0}, {"xz": 192, "cmake": 300, "lz4": 300, "libzip": 300},
+                      now, live or {}, "⠹", history or {})  # noqa: E501
+
+    def line(self, rows, name):
+        return next(line for _, line in rows if f" {name} " in line)
+
     def test_lines_describe_each_formula(self):
-        deps = graph(LIBZIP)
         states = {"xz": DONE, "cmake": "building", "lz4": WAITING, "libzip": WAITING}
-        rows = render(LIBZIP, deps, states, {"xz": 0, "cmake": 0}, {"xz": 192}, 840)
-        text = "\n".join(line for _, line in rows)
+        text = "\n".join(line for _, line in self.rows(states, {"cmake": {"phase": "compiling"}}))
         self.assertIn("xz      built in 3m12s", text)
-        self.assertIn("cmake   building 14m00s  (build-time)", text)
+        self.assertIn("cmake   compiling   [5/9]", text)
+        self.assertIn("14m00s elapsed", text)
         self.assertIn("lz4     waiting for cmake", text)
-        self.assertIn("libzip  waiting for lz4", text)
         self.assertIn("zstd    official bottle", text)
 
-    def test_non_terminal_prints_only_state_changes(self):
+    def test_target_pipeline_has_a_verifying_phase(self):
+        states = {"xz": DONE, "cmake": DONE, "lz4": DONE, "libzip": "verifying"}
+        self.assertIn("verifying   [10/10]", self.line(self.rows(states), "libzip"))
+
+    def test_bar_and_time_left_from_previous_build(self):
+        states = {"xz": DONE, "cmake": "building", "lz4": WAITING, "libzip": WAITING}
+        live = {"cmake": {"phase": "compiling", "build_started": 240}}
+        line = self.line(self.rows(states, live, {"cmake": 1000}), "cmake")
+        self.assertIn("[██████░░░░]  60%", line)
+        self.assertIn("14m00s elapsed · ~6m40s left", line)
+
+    def test_overrun_reads_almost_done(self):
+        states = {"xz": DONE, "cmake": "building", "lz4": WAITING, "libzip": WAITING}
+        line = self.line(self.rows(states, {"cmake": {"build_started": 0}}, {"cmake": 600}), "cmake")
+        self.assertIn(" 99%", line)
+        self.assertIn("almost done", line)
+
+    def test_no_history_shows_elapsed_only_in_aligned_columns(self):
+        states = {"xz": DONE, "cmake": "building", "lz4": "building", "libzip": WAITING}
+        live = {"cmake": {"phase": "compiling", "build_started": 0}, "lz4": {"phase": "configuring"}}
+        rows = self.rows(states, live)
+        a, b = self.line(rows, "cmake"), self.line(rows, "lz4")
+        self.assertNotIn("%", a)
+        self.assertEqual(a.index("elapsed"), b.index("elapsed"))
+
+    def test_stale_log_is_flagged(self):
+        states = {"xz": DONE, "cmake": "building", "lz4": WAITING, "libzip": WAITING}
+        line = self.line(self.rows(states, {"cmake": {"phase": "compiling", "log_at": 840 - 17 * 60}}), "cmake")
+        self.assertIn("log 17m00s old", line)
+
+    def test_non_terminal_prints_only_state_and_phase_changes(self):
         out = io.StringIO()
         display = Display(out)
-        deps, states = graph(LIBZIP), {"xz": "building", "cmake": "building", "lz4": WAITING, "libzip": WAITING}
-        display.show(render(LIBZIP, deps, states, {"xz": 0, "cmake": 0}, {}, 10))
-        display.show(render(LIBZIP, deps, states, {"xz": 0, "cmake": 0}, {}, 20))
-        self.assertEqual(out.getvalue().count("building"), 2)
+        states = {"xz": "building", "cmake": "building", "lz4": WAITING, "libzip": WAITING}
+        display.show(self.rows(states, {"xz": {"phase": "compiling"}}, now=10))
+        display.show(self.rows(states, {"xz": {"phase": "compiling"}}, now=20))
+        display.show(self.rows(states, {"xz": {"phase": "testing"}}, now=30))
+        self.assertEqual(out.getvalue().count(" xz "), 2)
+
+
+class FitTest(unittest.TestCase):
+    ROWS = [("a:static", "  ✔ a  official bottle"), ("b:static", "  ✔ b  mybrew bottle"),
+            ("c:static", "  ✔ c  official bottle"), ("x:building:compiling:", "  ⠹ x  compiling"),
+            ("y:waiting:waiting:", "  ⏸ y  waiting for x")]
+
+    def test_bottle_rows_fold_into_one_summary(self):
+        lines = fit(self.ROWS, 100, 40)
+        self.assertEqual(len(lines), 3)
+        self.assertIn("3 from bottles: 2 official, 1 mybrew", lines[-1])
+
+    def test_block_never_exceeds_terminal_height(self):
+        rows = [(f"n{i}:building:compiling:", f"  ⠹ n{i}") for i in range(50)]
+        lines = fit(rows, 100, 10)
+        self.assertEqual(len(lines), 9)
+        self.assertIn("… and 42 more", lines[-1])
+
+    def test_lines_never_exceed_terminal_width(self):
+        line = "\x1b[34m⠹\x1b[0m " + "x" * 200
+        cut = truncate(line, 40)
+        visible = __import__("re").sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", cut)
+        self.assertEqual(len(visible), 41)  # 40 characters and the ellipsis
+        self.assertTrue(visible.endswith("…"))
+        self.assertEqual(truncate("short", 40), "short")
+
+    def test_redraw_lands_on_the_previous_frame(self):
+        class Tty(io.StringIO):
+            def isatty(self):
+                return True
+        out = Tty()
+        display = Display(out, {"TERM": "xterm"})
+        display.show(self.ROWS)
+        display.show(self.ROWS[:4])  # a shorter frame
+        frames = out.getvalue().split("\x1b[3F")
+        self.assertEqual(len(frames), 2)  # moved up exactly the 3 lines drawn before
+        self.assertEqual(frames[1].count("\n"), 3)  # and overwrote all 3, blanking the leftover
+        display.close()
+        self.assertTrue(out.getvalue().endswith("\x1b[?7h"))
 
 
 class AnimationTest(unittest.TestCase):
-    def test_step_progress_of_running_job(self):
-        steps = [{"status": "completed"}] * 4 + [{"status": "in_progress"}] + [{"status": "queued"}] * 5
-        view = {"jobs": [{"name": "build", "status": "in_progress", "steps": steps}]}
-        self.assertEqual(step_progress(view), (4, 10))
-        self.assertIsNone(step_progress({"jobs": [{"name": "build", "status": "queued", "steps": []}]}))
-
-    def test_running_line_shows_spinner_frame_and_steps(self):
-        deps = graph(LIBZIP)
+    def test_running_line_shows_spinner_frame(self):
         states = {"xz": "building", "cmake": WAITING, "lz4": WAITING, "libzip": WAITING}
-        rows = render(LIBZIP, deps, states, {"xz": 0}, {}, 75, {"xz": (4, 10)}, "⠹")
+        rows = render(LIBZIP, graph(LIBZIP), states, {"xz": 0}, {}, 75, {"xz": {"phase": "fetching"}}, "⠹")
         line = next(line for _, line in rows if " xz " in line)
         self.assertIn("⠹", line)
-        self.assertIn("building [4/10] 1m15s", line)
-
-    def test_step_changes_do_not_add_log_lines(self):
-        deps, states = graph(LIBZIP), {"xz": "building", "cmake": WAITING, "lz4": WAITING, "libzip": WAITING}
-        first = dict(render(LIBZIP, deps, states, {"xz": 0}, {}, 10, {"xz": (3, 10)}, "⠋"))
-        second = dict(render(LIBZIP, deps, states, {"xz": 0}, {}, 20, {"xz": (5, 10)}, "⠙"))
-        self.assertEqual(first.keys(), second.keys())
+        self.assertIn("fetching    [2/9]", line)
 
     def test_ascii_fallback_and_no_animation_off_terminal(self):
         self.assertEqual(spinner_frames("US-ASCII"), "|/-\\")

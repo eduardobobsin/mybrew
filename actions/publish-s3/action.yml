@@ -76,4 +76,5 @@ runs:
       working-directory: ${{ inputs.tap-dir }}
       env:
         FORMULA: ${{ inputs.formula }}
+        GH_TOKEN: ${{ github.token }}
       run: '"${{ github.action_path }}/../../scripts/commit_formula.sh" "$FORMULA" "$RUNNER_TEMP/trusted-plan.json"'

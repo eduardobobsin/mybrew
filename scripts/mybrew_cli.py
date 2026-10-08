@@ -29,6 +29,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -40,6 +42,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from plan_build import load_registry, plan
+from progress import LogReader, bar, estimate, last_timestamp, phase_of_log, position
 
 WORKFLOW = "build.yml"
 POLL_SECONDS = 10
@@ -247,15 +250,6 @@ def phase_of(view: dict) -> str:
     return current
 
 
-def step_progress(view: dict) -> tuple[int, int] | None:
-    """(finished, total) steps of the job currently running, if any."""
-    for job in view.get("jobs", []):
-        if job["status"] == "in_progress" and job.get("steps"):
-            done = sum(1 for step in job["steps"] if step["status"] == "completed")
-            return done, len(job["steps"])
-    return None
-
-
 def spinner_frames(encoding: str | None) -> str:
     return SPINNER if "utf" in (encoding or "").lower() else SPINNER_ASCII
 
@@ -269,15 +263,26 @@ def elapsed(seconds: float) -> str:
     return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
 
 
+def iso_epoch(stamp: str) -> float:
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00")).timestamp()
+
+
+PHASE_WIDTH = max(len(p) for p in ("queued", "dispatched", "configuring", "publishing"))
+BAR_WIDTH = len("[██████████]  99%")
+
+
 def render(the_plan: dict, deps: dict[str, set[str]], states: dict[str, str],
            started: dict[str, float], ended: dict[str, float], now: float,
-           progress: dict[str, tuple[int, int]] | None = None, spinner: str | None = None) -> list[tuple[str, str]]:
-    """(state key, line) per formula; the key changes only when the state does.
+           live: dict[str, dict] | None = None, spinner: str | None = None,
+           history: dict[str, float] | None = None) -> list[tuple[str, str]]:
+    """(state key, line) per formula; the key changes only when the state or phase does.
 
-    `spinner` is the current animation frame for running formulae (None draws a
-    static icon); `progress` holds (finished, total) steps of each running job.
+    `live[name]` holds what the scheduler knows of a running build: its phase
+    (from the job log), when its build job started, and how old the log is.
+    `history[name]` is the previous build's duration, which drives the bar and
+    the time left. `spinner` is the animation frame (None draws a static icon).
     """
-    progress = progress or {}
+    live, history = live or {}, history or {}
     width = max(len(n) for n in the_plan["formulae"])
     lines = []
     for name, info in the_plan["formulae"].items():
@@ -290,15 +295,30 @@ def render(the_plan: dict, deps: dict[str, set[str]], states: dict[str, str],
         if state == WAITING:
             waiting = sorted(d for d in deps[name] if states[d] != DONE)
             text = f"waiting for {', '.join(waiting)}" if waiting else "ready"
+            phase = state
         elif state == SKIPPED:
-            text = "skipped: a dependency failed"
+            text, phase = "skipped: a dependency failed", state
         elif state in (DONE, FAILED):
             text = f"{'built' if state == DONE else 'failed'} in {elapsed(ended[name] - started[name])}"
+            phase = state
         else:
-            steps = f" [{progress[name][0]}/{progress[name][1]}]" if name in progress else ""
-            text = f"{state}{steps} {elapsed(now - started[name])}"
+            info_live = live.get(name, {})
+            phase = info_live.get("phase", "preparing") if state == "building" else state
+            place = position(phase, verify=name == the_plan["target"])
+            column = f"{phase:<{PHASE_WIDTH}} {f'[{place[0]}/{place[1]}]' if place else '':<7}"
+            meter, timing = " " * BAR_WIDTH, f"{elapsed(now - started[name])} elapsed"
+            build_started = info_live.get("build_started")
+            if state == "building" and build_started is not None:
+                fraction, left = estimate(now - build_started, history.get(name))
+                if fraction is not None:
+                    meter = f"[{bar(fraction)}] {int(fraction * 100):>3}%"
+                    timing += f" · ~{elapsed(left)} left" if left else " · almost done"
+            log_at = info_live.get("log_at")
+            if state == "building" and log_at and now - log_at > 300:
+                timing += f" · log {elapsed(now - log_at)} old"
+            text = f"{column} {meter}  {timing}"
         icon = ICONS.get(state, f"\033[34m{spinner or '⟳'}\033[0m")
-        key = f"{name}:{state}:{text if state == WAITING else ''}"
+        key = f"{name}:{state}:{phase}:{text if state == WAITING else ''}"
         lines.append((key, f"  {icon} {name:<{width}}  {text}{note}"))
     return lines
 
@@ -317,6 +337,47 @@ def list_runs(repo: str) -> list[dict]:
                           "workflow_dispatch", "--limit", "50", "--json", "databaseId,displayTitle,createdAt,status"))
 
 
+ANSI_CODE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+
+def truncate(line: str, width: int) -> str:
+    """Cut a line to `width` visible characters, keeping its color codes intact."""
+    out, visible, i = [], 0, 0
+    while i < len(line):
+        code = ANSI_CODE.match(line, i)
+        if code:
+            out.append(code.group(0))
+            i = code.end()
+            continue
+        if visible >= width:
+            out.append("…" if width else "")
+            break
+        out.append(line[i])
+        visible += 1
+        i += 1
+    return "".join(out) + ("\x1b[0m" if "\x1b[" in line else "")
+
+
+def fit(rows: list[tuple[str, str]], columns: int, height: int) -> list[str]:
+    """The block to redraw in place: bottle rows folded into one summary line,
+    lines cut to the terminal width and the block to its height, so a redraw
+    always lands exactly on the previous frame (wrapped or scrolled lines are
+    what leave copies in the scrollback)."""
+    static = [line for key, line in rows if key.endswith(":static")]
+    lines = [line for key, line in rows if not key.endswith(":static")]
+    if static:
+        official = sum("official bottle" in line for line in static)
+        parts = [f"{official} official"] if official else []
+        if len(static) - official:
+            parts.append(f"{len(static) - official} mybrew")
+        lines.append(f"  {ICONS[DONE]} {len(static)} from bottles: {', '.join(parts)}")
+    room = max(height - 1, 1)
+    if len(lines) > room:
+        hidden = len(lines) - (room - 1)
+        lines = lines[:room - 1] + [f"  … and {hidden} more"]
+    return [truncate(line, max(columns - 2, 1)) for line in lines]  # + ellipsis = width - 1
+
+
 class Display:
     """Redraws the status block in place on a terminal; prints changes otherwise."""
 
@@ -328,11 +389,16 @@ class Display:
 
     def show(self, rows: list[tuple[str, str]]) -> None:
         if self.tty:
+            size = shutil.get_terminal_size((100, 40))
+            lines = fit(rows, size.columns, size.lines)
             if self.drawn:
                 self.stream.write(f"\033[{self.drawn}F")
-            for _, line in rows:
+            else:
+                self.stream.write("\033[?7l")  # no wrapping while we own the block
+            lines += [""] * (self.drawn - len(lines))  # a shrinking block clears its old tail
+            for line in lines:
                 self.stream.write(f"\033[2K{line}\n")
-            self.drawn = len(rows)
+            self.drawn = len(lines)
         else:
             for key, line in rows:
                 if key not in self.printed:
@@ -340,12 +406,18 @@ class Display:
                     self.stream.write(line + "\n")
         self.stream.flush()
 
+    def close(self) -> None:
+        if self.tty and self.drawn:
+            self.stream.write("\033[?7h")
+            self.stream.flush()
+
 
 class GitHub:
     """The three gh calls the scheduler needs; tests substitute a fake."""
 
     def __init__(self, repo: str):
         self.repo = repo
+        self.logs = LogReader(repo, run("gh", "auth", "token").strip())
 
     def dispatch(self, formula: str, verify: bool) -> None:
         run("gh", "workflow", "run", WORKFLOW, "--repo", self.repo, "-f", f"formula={formula}",
@@ -368,7 +440,8 @@ class Scheduler:
     waits on the network.
     """
 
-    def __init__(self, the_plan: dict, github, parallel: int, clock=time.time):
+    def __init__(self, the_plan: dict, github, parallel: int, clock=time.time,
+                 history: dict[str, float] | None = None):
         self.plan, self.github, self.parallel, self.clock = the_plan, github, parallel, clock
         self.deps = graph(the_plan)
         self.states = {n: WAITING for n in self.deps}
@@ -376,7 +449,8 @@ class Scheduler:
         self.since: dict[str, datetime] = {}
         self.started: dict[str, float] = {}
         self.ended: dict[str, float] = {}
-        self.progress: dict[str, tuple[int, int]] = {}
+        self.live: dict[str, dict] = {}
+        self.history = history or {}
         self.lock = threading.Lock()
         self.pool = ThreadPoolExecutor(max_workers=max(parallel, 1))
 
@@ -412,9 +486,32 @@ class Scheduler:
                 self.states[name] = phase_of(view)
                 if self.states[name] in (DONE, FAILED):
                     self.ended[name] = self.clock()
-                    self.progress.pop(name, None)
-                elif (steps := step_progress(view)):
-                    self.progress[name] = steps
+                build = next((j for j in view.get("jobs", []) if j["name"] == "build"), None)
+                if build and build.get("startedAt") and not build["startedAt"].startswith("0001"):
+                    entry = self.live.setdefault(name, {})
+                    entry["build_started"] = iso_epoch(build["startedAt"])
+                    entry["job"] = build.get("databaseId")
+        reading = [n for n, s in self.snapshot()[0].items() if s == "building" and self.live.get(n, {}).get("job")]
+        list(self.pool.map(self.read_log, reading))
+
+    def read_log(self, name: str) -> None:
+        """Refresh a build's phase from its log, downloading it only when it has grown."""
+        logs = getattr(self.github, "logs", None)
+        if logs is None:
+            return
+        with self.lock:
+            entry = dict(self.live.get(name, {}))
+        try:
+            size = logs.size(entry["job"])
+            if not size or size == entry.get("log_size"):
+                return
+            text = logs.text(entry["job"])
+        except (OSError, ValueError):
+            return  # progress is best effort; the next poll tries again
+        stamp = last_timestamp(text)
+        with self.lock:
+            self.live[name].update(log_size=size, phase=phase_of_log(text),
+                                   log_at=iso_epoch(stamp) if stamp else None)
 
     def finished(self) -> bool:
         with self.lock:
@@ -422,15 +519,16 @@ class Scheduler:
 
     def snapshot(self) -> tuple:
         with self.lock:
-            return (dict(self.states), dict(self.started), dict(self.ended), dict(self.progress))
+            return (dict(self.states), dict(self.started), dict(self.ended),
+                    {n: dict(v) for n, v in self.live.items()})
 
     def failures(self) -> dict[str, int | None]:
         return {n: self.runs.get(n) for n, s in self.states.items() if s == FAILED}
 
 
-def build_missing(repo: str, the_plan: dict, parallel: int) -> None:
+def build_missing(repo: str, the_plan: dict, parallel: int, history: dict[str, float] | None = None) -> None:
     """Build every formula in the plan's order as its own run, dependencies first."""
-    scheduler = Scheduler(the_plan, GitHub(repo), parallel)
+    scheduler = Scheduler(the_plan, GitHub(repo), parallel, history=history)
     display = Display()
     stop, error = threading.Event(), []
 
@@ -450,18 +548,21 @@ def build_missing(repo: str, the_plan: dict, parallel: int) -> None:
     try:
         frame = 0
         while poller.is_alive():
-            states, started, ended, progress = scheduler.snapshot()
+            states, started, ended, live = scheduler.snapshot()
             spinner = display.frames[frame % len(display.frames)] if display.animate else None
-            display.show(render(the_plan, scheduler.deps, states, started, ended, time.time(), progress, spinner))
+            display.show(render(the_plan, scheduler.deps, states, started, ended, time.time(), live, spinner,
+                                scheduler.history))
             frame += 1
             poller.join(FRAME_SECONDS if display.animate else 1.0)
-        states, started, ended, progress = scheduler.snapshot()
-        display.show(render(the_plan, scheduler.deps, states, started, ended, time.time(), progress, None))
+        states, started, ended, live = scheduler.snapshot()
+        display.show(render(the_plan, scheduler.deps, states, started, ended, time.time(), live, None,
+                            scheduler.history))
     except KeyboardInterrupt:
         stop.set()
         raise MybrewError("interrupted; builds already started keep running on GitHub. "
                           "Run mybrew again to pick them up.") from None
     finally:
+        display.close()
         scheduler.pool.shutdown(wait=False)
 
     if error:
@@ -505,6 +606,11 @@ def unique(steps: list[list[str]]) -> list[list[str]]:
     return result
 
 
+def build_history(tap: Tap) -> dict[str, float]:
+    """Previous build durations by formula, for progress estimates."""
+    return {n: e["build_seconds"] for n, e in load_registry(tap.registry_dir).items() if e.get("build_seconds")}
+
+
 def load_plan(tap: Tap, formula: str) -> dict:
     if not tap.fresh:
         run("git", "-C", str(tap.path), "pull", "--ff-only", "--quiet")
@@ -545,7 +651,7 @@ def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, 
                 raise MybrewError(f"no bottle for {' '.join(the_plan['order'])} (--no-build given)")
             require_gh()
             say(f"Building {len(the_plan['order'])} bottle(s) on github.com/{tap.repo}")
-            build_missing(tap.repo, the_plan, parallel)
+            build_missing(tap.repo, the_plan, parallel, build_history(tap))
             tap.fresh = False
             the_plan = load_plan(tap, formula)
         else:
@@ -594,7 +700,7 @@ def cmd_third_party(tap: Tap, cellar: Path, formula: str, allow_build: bool, par
             raise MybrewError(f"no bottle for {' '.join(merged['order'])} (--no-build given)")
         require_gh()
         say(f"Building {len(merged['order'])} bottle(s) for {formula}'s dependencies on github.com/{tap.repo}")
-        build_missing(tap.repo, merged, parallel)
+        build_missing(tap.repo, merged, parallel, build_history(tap))
         tap.fresh = False
         plans = [load_plan(tap, dep) for dep in core]
     elif not install:

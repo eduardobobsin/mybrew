@@ -28,14 +28,19 @@ dependencies are published, up to `MYBREW_PARALLEL` (default 4) at a time, with 
 ```
 ==> Building 4 bottle(s) on github.com/you/homebrew-mybrew
   ✔ xz      built in 3m12s
-  ⠹ cmake   building [5/10] 14m02s  (build-time)
+  ⠹ cmake   compiling   [5/9]  [██████░░░░]  61%  14m02s elapsed · ~8m50s left  (build-time)
   ⏸ lz4     waiting for cmake
   ⏸ libzip  waiting for lz4
-  ✔ zstd    official bottle
+  ✔ 1 from bottles: 1 official
 ```
 
-In a terminal the block redraws in place with a spinner and the running job's step count;
-in logs and pipes (or with `NO_COLOR`/`TERM=dumb`) it prints one line per change instead.
+Each build shows its phase and place in the run's pipeline (preparing, fetching, patching,
+configuring, compiling, installing, testing, bottling, publishing, and verifying for the formula
+you asked for). The bar and time left compare elapsed time with that formula's previous build,
+recorded in the registry. The phase comes from the job log, which GitHub only refreshes in large
+chunks, so it is marked `log … old` when stale. In a terminal the block redraws in place, fitted
+to the window; in logs and pipes (or with `NO_COLOR`/`TERM=dumb`) it prints one line per change.
+
 A failed formula skips only what depends on it; finished bottles stay cached. Ctrl-C leaves running
 builds alone, and the next `mybrew install` attaches to them.
 
