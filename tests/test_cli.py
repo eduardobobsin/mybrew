@@ -9,8 +9,10 @@ import io  # noqa: E402
 
 from mybrew_cli import (  # noqa: E402
     DONE, FAILED, SKIPPED, WAITING, Display, MybrewError, active_runs, advance, brew_env, find_run, finished,
-    graph, install_steps, phase_of, render, spinner_frames, step_progress,
+    Scheduler, graph, install_steps, phase_of, render, spinner_frames, step_progress,
 )
+import threading  # noqa: E402
+import time  # noqa: E402
 
 TAP = "me/mybrew"
 
@@ -214,6 +216,87 @@ class AnimationTest(unittest.TestCase):
         self.assertEqual(spinner_frames("US-ASCII"), "|/-\\")
         self.assertEqual(spinner_frames("utf-8")[0], "⠋")
         self.assertFalse(Display(io.StringIO(), {}).animate)
+
+
+class FakeGitHub:
+    """Each dispatched run finishes after `polls_to_finish` status checks."""
+
+    def __init__(self, delay=0.0, fail=(), polls_to_finish=2):
+        self.delay, self.fail, self.polls_to_finish = delay, set(fail), polls_to_finish
+        self.dispatched, self.created, self.checks = [], {}, {}
+        self.in_flight = self.max_in_flight = 0
+        self.lock = threading.Lock()
+
+    def dispatch(self, formula, verify):
+        with self.lock:
+            self.dispatched.append((formula, verify))
+            self.created[formula] = len(self.created) + 1
+
+    def runs(self):
+        return [{"databaseId": i, "displayTitle": f"Build {n}", "createdAt": "2999-01-01T00:00:00Z",
+                 "status": "in_progress"} for n, i in self.created.items()]
+
+    def view(self, run_id):
+        name = next(n for n, i in self.created.items() if i == run_id)
+        with self.lock:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+            self.checks[name] = self.checks.get(name, 0) + 1
+            count = self.checks[name]
+        time.sleep(self.delay)
+        with self.lock:
+            self.in_flight -= 1
+        if count < self.polls_to_finish:
+            return {"status": "in_progress", "conclusion": "", "jobs": [{"name": "build", "status": "in_progress", "steps": []}]}
+        return {"status": "completed", "conclusion": "failure" if name in self.fail else "success", "jobs": []}
+
+
+class SchedulerClassTest(unittest.TestCase):
+    def run_to_end(self, github, parallel=4):
+        scheduler = Scheduler(LIBZIP, github, parallel)
+        for _ in range(20):
+            scheduler.poll()
+            if scheduler.finished():
+                break
+        return scheduler
+
+    def test_full_run_respects_dependency_order_and_verifies_only_target(self):
+        github = FakeGitHub()
+        self.run_to_end(github)
+        order = [name for name, _ in github.dispatched]
+        self.assertEqual(set(order[:2]), {"xz", "cmake"})
+        self.assertLess(order.index("cmake"), order.index("lz4"))
+        self.assertEqual(order[-1], "libzip")
+        self.assertEqual([n for n, verify in github.dispatched if verify], ["libzip"])
+
+    def test_status_checks_run_in_parallel(self):
+        github = FakeGitHub(delay=0.3)
+        scheduler = Scheduler(LIBZIP, github, 4)
+        scheduler.poll()  # dispatches xz and cmake
+        begin = time.time()
+        scheduler.poll()  # checks both
+        self.assertEqual(github.max_in_flight, 2)
+        self.assertLess(time.time() - begin, 0.55)
+
+    def test_snapshot_never_waits_on_the_network(self):
+        github = FakeGitHub(delay=0.5)
+        scheduler = Scheduler(LIBZIP, github, 4)
+        scheduler.poll()
+        worker = threading.Thread(target=scheduler.poll)
+        worker.start()
+        time.sleep(0.1)  # poll is now inside the slow status checks
+        begin = time.time()
+        scheduler.snapshot()
+        self.assertLess(time.time() - begin, 0.05)
+        worker.join()
+
+    def test_failure_skips_dependents_only(self):
+        scheduler = self.run_to_end(FakeGitHub(fail={"cmake"}))
+        states = scheduler.snapshot()[0]
+        self.assertEqual(states["cmake"], FAILED)
+        self.assertEqual(states["xz"], DONE)
+        self.assertEqual((states["lz4"], states["libzip"]), (SKIPPED, SKIPPED))
+        self.assertEqual(list(scheduler.failures()), ["cmake"])
 
 
 class ActiveRunsTest(unittest.TestCase):

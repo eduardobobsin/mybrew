@@ -24,7 +24,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -323,68 +325,134 @@ class Display:
         self.stream.flush()
 
 
+class GitHub:
+    """The three gh calls the scheduler needs; tests substitute a fake."""
+
+    def __init__(self, repo: str):
+        self.repo = repo
+
+    def dispatch(self, formula: str, verify: bool) -> None:
+        run("gh", "workflow", "run", WORKFLOW, "--repo", self.repo, "-f", f"formula={formula}",
+            "-f", "single=true", "-f", f"verify={'true' if verify else 'false'}")
+
+    def runs(self) -> list[dict]:
+        return list_runs(self.repo)
+
+    def view(self, run_id: int) -> dict:
+        return json.loads(run("gh", "run", "view", str(run_id), "--repo", self.repo,
+                              "--json", "status,conclusion,jobs"))
+
+
+class Scheduler:
+    """Builds a plan's missing bottles as one run per formula, dependencies first.
+
+    All GitHub traffic happens in poll(), which a background thread calls every
+    POLL_SECONDS; status checks for active runs go out in parallel. snapshot()
+    gives the display a consistent copy at any moment, so the spinner never
+    waits on the network.
+    """
+
+    def __init__(self, the_plan: dict, github, parallel: int, clock=time.time):
+        self.plan, self.github, self.parallel, self.clock = the_plan, github, parallel, clock
+        self.deps = graph(the_plan)
+        self.states = {n: WAITING for n in self.deps}
+        self.runs: dict[str, int | None] = {}
+        self.since: dict[str, datetime] = {}
+        self.started: dict[str, float] = {}
+        self.ended: dict[str, float] = {}
+        self.progress: dict[str, tuple[int, int]] = {}
+        self.lock = threading.Lock()
+        self.pool = ThreadPoolExecutor(max_workers=max(parallel, 1))
+
+    def attach(self) -> None:
+        """Pick up runs already in flight, e.g. after Ctrl-C and a rerun."""
+        for name, run_id in active_runs(self.github.runs()).items():
+            if name in self.states:
+                self.states[name], self.runs[name], self.started[name] = "dispatched", run_id, self.clock()
+
+    def poll(self) -> None:
+        with self.lock:
+            ready = advance(self.deps, self.states, self.parallel)
+        for name in ready:
+            since = datetime.now(timezone.utc) - timedelta(seconds=30)
+            self.github.dispatch(name, verify=name == self.plan["target"])
+            with self.lock:
+                self.since[name] = since
+                self.states[name], self.runs[name], self.started[name] = "dispatched", None, self.clock()
+
+        with self.lock:
+            unresolved = [n for n, r in self.runs.items() if r is None]
+        if unresolved:
+            listed = self.github.runs()
+            with self.lock:
+                for name in unresolved:
+                    self.runs[name] = find_run(listed, name, self.since[name])
+
+        with self.lock:
+            active = [(n, r) for n, r in self.runs.items() if r is not None and self.states[n] not in (DONE, FAILED)]
+        views = list(self.pool.map(lambda item: (item[0], self.github.view(item[1])), active))
+        with self.lock:
+            for name, view in views:
+                self.states[name] = phase_of(view)
+                if self.states[name] in (DONE, FAILED):
+                    self.ended[name] = self.clock()
+                    self.progress.pop(name, None)
+                elif (steps := step_progress(view)):
+                    self.progress[name] = steps
+
+    def finished(self) -> bool:
+        with self.lock:
+            return finished(self.states)
+
+    def snapshot(self) -> tuple:
+        with self.lock:
+            return (dict(self.states), dict(self.started), dict(self.ended), dict(self.progress))
+
+    def failures(self) -> dict[str, int | None]:
+        return {n: self.runs.get(n) for n, s in self.states.items() if s == FAILED}
+
+
 def build_missing(repo: str, the_plan: dict, parallel: int) -> None:
     """Build every formula in the plan's order as its own run, dependencies first."""
-    deps = graph(the_plan)
-    states = {n: WAITING for n in deps}
-    runs: dict[str, int | None] = {}
-    since: dict[str, datetime] = {}
-    started: dict[str, float] = {}
-    ended: dict[str, float] = {}
-    progress: dict[str, tuple[int, int]] = {}
+    scheduler = Scheduler(the_plan, GitHub(repo), parallel)
     display = Display()
+    stop, error = threading.Event(), []
 
-    for name, run_id in active_runs(list_runs(repo)).items():
-        if name in states:
-            states[name], runs[name], started[name] = "dispatched", run_id, time.time()
+    def poll_loop() -> None:
+        try:
+            scheduler.attach()
+            while not stop.is_set():
+                scheduler.poll()
+                if scheduler.finished():
+                    break
+                stop.wait(POLL_SECONDS)
+        except Exception as exc:  # surfaced on the main thread
+            error.append(exc)
 
+    poller = threading.Thread(target=poll_loop, name="mybrew-poll", daemon=True)
+    poller.start()
     try:
         frame = 0
-        while True:
-            poll_at = time.time() + POLL_SECONDS
-            for name in advance(deps, states, parallel):
-                since[name] = datetime.now(timezone.utc) - timedelta(seconds=30)
-                verify = "true" if name == the_plan["target"] else "false"
-                run("gh", "workflow", "run", WORKFLOW, "--repo", repo, "-f", f"formula={name}",
-                    "-f", "single=true", "-f", f"verify={verify}")
-                states[name], runs[name], started[name] = "dispatched", None, time.time()
-
-            unresolved = [n for n, r in runs.items() if r is None]
-            if unresolved:
-                listed = list_runs(repo)
-                for name in unresolved:
-                    runs[name] = find_run(listed, name, since[name])
-
-            for name, run_id in runs.items():
-                if run_id is None or states[name] in (DONE, FAILED):
-                    continue
-                view = json.loads(run("gh", "run", "view", str(run_id), "--repo", repo,
-                                      "--json", "status,conclusion,jobs"))
-                states[name] = phase_of(view)
-                if states[name] in (DONE, FAILED):
-                    ended[name] = time.time()
-                    progress.pop(name, None)
-                elif (steps := step_progress(view)):
-                    progress[name] = steps
-
-            # Redraw between polls: the spinner and timers move, GitHub is asked
-            # only every POLL_SECONDS.
-            while True:
-                spinner = display.frames[frame % len(display.frames)] if display.animate else None
-                display.show(render(the_plan, deps, states, started, ended, time.time(), progress, spinner))
-                frame += 1
-                if finished(states) or time.time() >= poll_at:
-                    break
-                time.sleep(FRAME_SECONDS if display.animate else max(poll_at - time.time(), 0))
-            if finished(states):
-                break
+        while poller.is_alive():
+            states, started, ended, progress = scheduler.snapshot()
+            spinner = display.frames[frame % len(display.frames)] if display.animate else None
+            display.show(render(the_plan, scheduler.deps, states, started, ended, time.time(), progress, spinner))
+            frame += 1
+            poller.join(FRAME_SECONDS if display.animate else 1.0)
+        states, started, ended, progress = scheduler.snapshot()
+        display.show(render(the_plan, scheduler.deps, states, started, ended, time.time(), progress, None))
     except KeyboardInterrupt:
+        stop.set()
         raise MybrewError("interrupted; builds already started keep running on GitHub. "
                           "Run mybrew again to pick them up.") from None
+    finally:
+        scheduler.pool.shutdown(wait=False)
 
-    failed = [n for n, s in states.items() if s == FAILED]
+    if error:
+        raise error[0] if isinstance(error[0], MybrewError) else MybrewError(f"polling GitHub failed: {error[0]}")
+    failed = scheduler.failures()
     if failed:
-        links = "\n  ".join(f"{n}: https://github.com/{repo}/actions/runs/{runs[n]}" for n in failed)
+        links = "\n  ".join(f"{n}: https://github.com/{repo}/actions/runs/{r}" for n, r in failed.items())
         raise MybrewError(f"build failed:\n  {links}")
 
 
