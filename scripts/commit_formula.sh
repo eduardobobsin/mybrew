@@ -13,6 +13,7 @@ git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git add Formula/ registry/
 [[ -d Aliases ]] && git add Aliases/
+[[ -d Patches ]] && git add Patches/
 git commit -m "${target}: add bottles" -m "Built: ${built}"
 for attempt in 1 2 3 4 5; do
   git pull --rebase --quiet && git push --quiet && exit 0

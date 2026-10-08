@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from assemble_publish import render_block, validate  # noqa: E402
-from import_formula import prepare, strip_bottle_block, write_aliases  # noqa: E402
+from import_formula import local_patches, prepare, strip_bottle_block, write_aliases  # noqa: E402
 import json  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -105,6 +105,17 @@ class ValidateTest(unittest.TestCase):
         block = render_block("https://r", {"cellar": "/usr/local/Cellar", "rebuild": 2, "sha256": SHA})
         self.assertIn("    rebuild 2\n", block)
         self.assertIn(f'sha256 cellar: "/usr/local/Cellar", sequoia: "{SHA}"', block)
+
+
+class LocalPatchTest(unittest.TestCase):
+    def test_finds_patch_files_in_patch_blocks(self):
+        source = 'class P < Formula\n  patch do\n    file "Patches/python/3.13-sysconfig.diff"\n    type :unofficial\n  end\nend\n'
+        self.assertEqual(local_patches(source), ["Patches/python/3.13-sysconfig.diff"])
+        self.assertEqual(local_patches(FORMULA), [])
+
+    def test_refuses_paths_that_escape_patches(self):
+        with self.assertRaises(SystemExit):
+            local_patches('  patch do\n    file "Patches/../Formula/evil.rb"\n  end\n')
 
 
 class AliasTest(unittest.TestCase):

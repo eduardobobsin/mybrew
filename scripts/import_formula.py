@@ -9,7 +9,9 @@ SHA-256 checksum. Then:
 - stanzas Homebrew only accepts in official taps (`no_autobump!`) are removed;
 - the formula's aliases are recreated as Aliases/<alias> symlinks, because
   brew links opt/<alias> from them and build shims rely on that (pkgconf is
-  invoked as opt/pkg-config).
+  invoked as opt/pkg-config);
+- local patches the formula applies (`file "Patches/..."`) are fetched from
+  homebrew-core at the same commit, since brew reads them from the tap root.
 
 Usage: import_formula.py <formula> <tap-dir> [<bottle-block-file>]
 Prints `version=<x>` and `path=<file>` lines (GitHub Actions output format).
@@ -28,6 +30,7 @@ API_URL = "https://formulae.brew.sh/api/formula/{name}.json"
 RAW_URL = "https://raw.githubusercontent.com/Homebrew/homebrew-core/{commit}/{path}"
 
 BOTTLE_BLOCK = re.compile(r"^(?P<indent>[ \t]*)bottle do\n.*?^(?P=indent)end\n(?:[ \t]*\n)?", re.M | re.S)
+LOCAL_PATCH = re.compile(r'^\s*file\s+"(Patches/[^"]+)"', re.M)
 OFFICIAL_ONLY = re.compile(r"^[ \t]*no_autobump!.*\n(?:[ \t]*\n)?", re.M)
 # Where a bottle block goes when upstream had none: before the first of these.
 BOTTLE_ANCHOR = re.compile(r"^  (?:depends_on|uses_from_macos|on_\w+ do|resource|patch|def install)\b", re.M)
@@ -69,7 +72,22 @@ def import_formula(name: str, tap_dir: Path, bottle_block: str | None = None) ->
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(prepare(source.decode(), bottle_block))
     write_aliases(name, meta.get("aliases", []), tap_dir)
+    for patch in local_patches(source.decode()):
+        target = tap_dir / patch
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(fetch(RAW_URL.format(commit=commit, path=patch)))
     return meta["versions"]["stable"], dest
+
+
+def local_patches(source: str) -> list[str]:
+    """Tap-relative patch files the formula applies; refuses paths leaving Patches/."""
+    found = []
+    for path in LOCAL_PATCH.findall(source):
+        parts = Path(path).parts
+        if ".." in parts or parts[0] != "Patches" or len(parts) < 2:
+            raise SystemExit(f"refusing patch path {path!r}")
+        found.append(path)
+    return found
 
 
 def write_aliases(name: str, aliases: list[str], tap_dir: Path) -> None:
