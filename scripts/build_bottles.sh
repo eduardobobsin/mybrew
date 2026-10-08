@@ -19,7 +19,8 @@ clear_name() {
   fi
 }
 
-while read -r formula source; do
+# The plan is read on fd 3: brew reads stdin and would swallow it otherwise.
+while read -r formula source <&3; do
   case "$source" in
     mybrew)
       echo "::group::${formula} (mybrew bottle)"
@@ -37,11 +38,20 @@ while read -r formula source; do
     *) continue ;;
   esac
   echo "::endgroup::"
-done < <(python3 -c '
+done 3< <(python3 -c '
 import json, sys
 for name, info in json.load(open(sys.argv[1]))["formulae"].items():
     print(name, info["source"])
 ' "$plan")
+
+# Every planned build must have produced its bottle JSON.
+python3 - "$plan" "$out" <<'PY'
+import json, pathlib, sys
+plan, out = json.load(open(sys.argv[1])), pathlib.Path(sys.argv[2])
+missing = [n for n in plan["order"] if not list(out.glob(f"{n}--*.bottle.json"))]
+if missing:
+    sys.exit(f"no bottle produced for: {' '.join(missing)}")
+PY
 
 # brew writes tarballs under their local name; uploads must use the name the
 # formula will request.
