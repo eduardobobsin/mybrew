@@ -3,7 +3,7 @@ description: Upload bottles to a release of the calling repository, then commit 
 
 inputs:
   formula:
-    description: Formula name inside the calling tap
+    description: Target formula the build was requested for (used in the commit message)
     required: true
   bottle-dir:
     description: Directory with the bottle tarballs and JSON from build-bottle
@@ -35,4 +35,7 @@ runs:
     - name: Commit formula and registry
       shell: bash
       working-directory: ${{ inputs.tap-dir }}
-      run: '"${{ github.action_path }}/../../scripts/commit_formula.sh" "${{ inputs.formula }}" "${{ inputs.bottle-dir }}"'
+      env:
+        FORMULA: ${{ inputs.formula }}
+        BOTTLE_DIR: ${{ inputs.bottle-dir }}
+      run: '"${{ github.action_path }}/../../scripts/commit_formula.sh" "$FORMULA" "$BOTTLE_DIR"'

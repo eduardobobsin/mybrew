@@ -1,0 +1,35 @@
+name: mybrew plan
+description: Work out which formulae (the target plus dependencies without an Intel bottle) need mybrew bottles.
+
+inputs:
+  formula:
+    description: homebrew/core formula the user wants installed
+    required: true
+  tap-dir:
+    description: Path to the checked-out tap repository
+    default: ${{ github.workspace }}
+  plan-file:
+    description: Where to write the plan JSON
+    default: ${{ runner.temp }}/bottles/plan.json
+
+outputs:
+  formulae:
+    description: Space-separated build order, empty if nothing needs building
+    value: ${{ steps.plan.outputs.formulae }}
+  plan-file:
+    description: Path of the plan JSON
+    value: ${{ inputs.plan-file }}
+
+runs:
+  using: composite
+  steps:
+    - id: plan
+      shell: bash
+      env:
+        FORMULA: ${{ inputs.formula }}
+        TAP_DIR: ${{ inputs.tap-dir }}
+        PLAN_FILE: ${{ inputs.plan-file }}
+      run: |
+        mkdir -p "$(dirname "$PLAN_FILE")"
+        python3 "${{ github.action_path }}/../../scripts/plan_build.py" "$FORMULA" \
+          "$TAP_DIR/registry/bottles.json" "$PLAN_FILE" >> "$GITHUB_OUTPUT"

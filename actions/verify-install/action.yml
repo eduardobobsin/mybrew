@@ -1,0 +1,24 @@
+name: mybrew verify install
+description: On a fresh runner, install the plan's mybrew formulae from the published tap and fail if any had to be compiled.
+
+inputs:
+  plan-file:
+    description: plan.json produced by the plan action
+    required: true
+  tap:
+    description: Tap to install from; defaults to the calling repository's tap
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TAP: ${{ inputs.tap }}
+        PLAN_FILE: ${{ inputs.plan-file }}
+      run: |
+        if [[ -z "$TAP" ]]; then
+          owner="$(echo "${GITHUB_REPOSITORY%%/*}" | tr '[:upper:]' '[:lower:]')"
+          repo="${GITHUB_REPOSITORY##*/}"
+          TAP="${owner}/${repo#homebrew-}"
+        fi
+        "${{ github.action_path }}/../../scripts/verify_install.sh" "$TAP" "$PLAN_FILE"

@@ -12,9 +12,11 @@ See [eduardobobsin/homebrew-mybrew](https://github.com/eduardobobsin/homebrew-my
 
 | Action | Does |
 |---|---|
+| `actions/plan` | Walks the runtime dependency graph; lists the target plus every dependency with no Intel bottle and no current mybrew bottle, dependencies first |
 | `actions/import-formula` | Copies a homebrew/core formula at the API's commit, verifies its SHA-256, drops the upstream bottle block |
-| `actions/build-bottle` | Registers the checkout as a tap, `brew install --build-bottle`, `brew test`, `brew bottle --json`, `brew bottle --merge --write` |
+| `actions/build-bottle` | Registers the checkout as a tap; for each planned formula in order: `brew install --build-bottle`, `brew test`, `brew bottle --json`, `brew bottle --merge --write` |
 | `actions/publish-github-release` | Uploads bottles to a release, updates `registry/bottles.json`, commits the formula |
+| `actions/verify-install` | On a fresh runner, installs the planned formulae from the published tap and fails unless all were poured from bottles |
 | `actions/publish-s3` | Assumes an IAM role via GitHub OIDC, uploads bottles to S3, checks they are publicly downloadable, commits the formula |
 
 ## Roadmap
