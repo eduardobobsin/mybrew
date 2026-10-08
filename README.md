@@ -26,7 +26,7 @@ See [eduardobobsin/homebrew-mybrew](https://github.com/eduardobobsin/homebrew-my
 | M0 Bottle | GitHub builds one Intel bottle | done (dos2unix 7.5.7) |
 | M1 Install | Custom tap installs that bottle, no compilation | done |
 | M2 Publish | S3 storage via OIDC, fully automated single formula | done |
-| M3 Dependencies | Recursive private fallback for dependencies without Intel bottles | |
+| M3 Dependencies | Recursive private fallback for dependencies without Intel bottles | done (calc→readline, jdupes) |
 | M4 Demand | `mybrew install foo` triggers a build on cache miss | |
 | M5 Platform | Template instance repo so others can deploy their own | |
 
