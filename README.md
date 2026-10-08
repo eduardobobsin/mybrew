@@ -22,6 +22,21 @@ mybrew install <formula>   # official bottle → brew; mybrew bottle → tap; ne
 mybrew plan <formula>      # where each piece would come from, without changing anything
 ```
 
+On a cache miss, each formula that needs a bottle is built as its own GitHub run as soon as its
+dependencies are published, up to `MYBREW_PARALLEL` (default 4) at a time, with live progress:
+
+```
+==> Building 4 bottle(s) on github.com/you/homebrew-mybrew
+  ✔ xz      built in 3m12s
+  ⟳ cmake   building 14m02s  (build-time)
+  ⏸ lz4     waiting for cmake
+  ⏸ libzip  waiting for lz4
+  ✔ zstd    official bottle
+```
+
+A failed formula skips only what depends on it; finished bottles stay cached. Ctrl-C leaves running
+builds alone, and the next `mybrew install` attaches to them.
+
 Anything else (`mybrew list`, `mybrew upgrade`, ...) is passed to `brew`. Building needs `gh`, logged in.
 
 ## Actions

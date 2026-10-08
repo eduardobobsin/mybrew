@@ -31,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from import_formula import import_formula  # noqa: E402
-from plan_build import plan  # noqa: E402
+from plan_build import load_registry, plan  # noqa: E402
 
 TAG = "sequoia"
 CELLARS = {"any", "any_skip_relocation", "/usr/local/Cellar"}
@@ -96,9 +96,7 @@ def main() -> None:
     for untrusted in [*bottle_dir.glob("*.rb"), bottle_dir / "plan.json"]:
         untrusted.unlink(missing_ok=True)
 
-    registry_path = tap_dir / "registry" / "bottles.json"
-    registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
-    trusted = plan(target, registry)
+    trusted = plan(target, load_registry(tap_dir / "registry"))
     if not trusted["order"]:
         fail("plan is empty; nothing should have been built")
 

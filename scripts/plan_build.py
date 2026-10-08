@@ -11,9 +11,13 @@ dependency on its own; those without an Intel bottle are built and published
 too, so later builds can reuse them. Each formula is marked `runtime` when the
 target needs it installed; only those matter to users.
 
-Usage: plan_build.py <formula> <registry.json> [<plan.json>]
-Prints `formulae=<space-separated build order>` (GitHub Actions output format)
-and, if <plan.json> is given, writes the full plan there.
+Usage: plan_build.py [--single] <formula> <registry-dir> [<plan.json>]
+<registry-dir> holds one <name>.json per published formula (a legacy
+bottles.json in it is read too). Prints `formulae=<space-separated build
+order>` (GitHub Actions output format) and, if <plan.json> is given, writes
+the full plan there. With --single, fails unless <formula> is the only thing
+to build: the mybrew client schedules each formula as its own run, after its
+dependencies are published.
 """
 
 from __future__ import annotations
@@ -38,6 +42,17 @@ def fetch_api(name: str) -> dict:
 def has_official_intel_bottle(meta: dict) -> bool:
     files = (meta.get("bottle") or {}).get("stable", {}).get("files", {})
     return bool(INTEL_MACOS_TAGS & set(files))
+
+
+def load_registry(directory: Path) -> dict:
+    registry: dict = {}
+    legacy = directory / "bottles.json"
+    if legacy.exists():
+        registry.update(json.loads(legacy.read_text()))
+    for path in sorted(directory.glob("*.json")):
+        if path.name != "bottles.json":
+            registry[path.stem] = json.loads(path.read_text())
+    return registry
 
 
 def plan(target: str, registry: dict, fetch=fetch_api) -> dict:
@@ -69,8 +84,8 @@ def plan(target: str, registry: dict, fetch=fetch_api) -> dict:
         for dep in edges:
             visit(dep)
         visiting.discard(name)
-        formulae[name] = {"version": version, "source": source,
-                          "dependencies": meta.get("dependencies", []), "runtime": False}
+        formulae[name] = {"version": version, "source": source, "runtime": False,
+                          "dependencies": meta.get("dependencies", []), "requires": edges}
 
     visit(target)
 
@@ -88,17 +103,28 @@ def plan(target: str, registry: dict, fetch=fetch_api) -> dict:
             "formulae": formulae}
 
 
+def single_violation(result: dict) -> str | None:
+    """Why a --single run must not proceed, or None."""
+    extra = [n for n in result["order"] if n != result["target"]]
+    if extra:
+        return f"{result['target']} needs these built first: {' '.join(extra)}"
+    return None
+
+
 def main() -> None:
-    if len(sys.argv) not in (3, 4):
+    args = sys.argv[1:]
+    single = "--single" in args
+    args = [a for a in args if a != "--single"]
+    if len(args) not in (2, 3):
         raise SystemExit(__doc__)
-    registry_path = Path(sys.argv[2])
-    registry = json.loads(registry_path.read_text()) if registry_path.exists() else {}
-    result = plan(sys.argv[1], registry)
-    if len(sys.argv) == 4:
-        Path(sys.argv[3]).write_text(json.dumps(result, indent=2) + "\n")
+    result = plan(args[0], load_registry(Path(args[1])))
+    if len(args) == 3:
+        Path(args[2]).write_text(json.dumps(result, indent=2) + "\n")
     for name, info in result["formulae"].items():
         role = "" if info["runtime"] else " (build-time)"
         print(f"  {name} {info['version']}: {info['source']}{role}", file=sys.stderr)
+    if single and (reason := single_violation(result)):
+        raise SystemExit(f"--single: {reason}")
     print(f"formulae={' '.join(result['order'])}")
 
 

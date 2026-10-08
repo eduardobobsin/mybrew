@@ -7,8 +7,13 @@
 Options for install:
   --no-build    fail instead of starting a build on a cache miss
 
+On a cache miss each formula that needs a bottle is built as its own GitHub
+run, as soon as its dependencies are published, several at a time. Ctrl-C
+leaves running builds alone; running mybrew again picks them back up.
+
 Environment:
-  MYBREW_TAP    tap to use (default: the only tapped */homebrew-mybrew)
+  MYBREW_TAP       tap to use (default: the only tapped */homebrew-mybrew)
+  MYBREW_PARALLEL  builds to run at once (default 4)
   HOMEBREW_NO_AUTO_UPDATE defaults to 1 for mybrew's own brew calls, since
                 mybrew refreshes its tap itself; set it to 0 to keep auto-update.
 """
@@ -24,10 +29,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from plan_build import plan
+from plan_build import load_registry, plan
 
 WORKFLOW = "build.yml"
-POLL_SECONDS = 15
+POLL_SECONDS = 10
+DEFAULT_PARALLEL = 4
 
 
 class MybrewError(Exception):
@@ -51,8 +57,8 @@ class Tap:
         return f"{owner}/homebrew-{short}"
 
     @property
-    def registry_path(self) -> Path:
-        return self.path / "registry" / "bottles.json"
+    def registry_dir(self) -> Path:
+        return self.path / "registry"
 
 
 def run(*cmd: str, capture: bool = True) -> str:
@@ -145,6 +151,96 @@ def find_run(runs: list[dict], formula: str, since: datetime) -> int | None:
     return max(matches, key=lambda r: r["createdAt"])["databaseId"] if matches else None
 
 
+def active_runs(runs: list[dict]) -> dict[str, int]:
+    """formula -> newest unfinished run, for attaching instead of duplicating."""
+    result: dict[str, tuple[str, int]] = {}
+    for r in runs:
+        if r["status"] != "completed" and r["displayTitle"].startswith("Build "):
+            name = r["displayTitle"][len("Build "):]
+            if name not in result or r["createdAt"] > result[name][0]:
+                result[name] = (r["createdAt"], r["databaseId"])
+    return {name: run_id for name, (_, run_id) in result.items()}
+
+
+# --- build scheduling (pure) ------------------------------------------------
+
+WAITING, QUEUED, DONE, FAILED, SKIPPED = "waiting", "queued", "done", "failed", "skipped"
+RUNNING = ("dispatched", QUEUED, "building", "publishing", "verifying")
+
+
+def graph(the_plan: dict) -> dict[str, set[str]]:
+    """For each formula to build, the other to-build formulae it waits for."""
+    order = set(the_plan["order"])
+    return {n: set(the_plan["formulae"][n].get("requires", [])) & order for n in the_plan["order"]}
+
+
+def advance(deps: dict[str, set[str]], states: dict[str, str], parallel: int) -> list[str]:
+    """Mark formulae blocked by a failure as skipped; return the ones to start now."""
+    changed = True
+    while changed:
+        changed = False
+        for name, needs in deps.items():
+            if states[name] == WAITING and any(states[d] in (FAILED, SKIPPED) for d in needs):
+                states[name] = SKIPPED
+                changed = True
+    slots = parallel - sum(1 for s in states.values() if s in RUNNING)
+    ready = [n for n, needs in deps.items() if states[n] == WAITING and all(states[d] == DONE for d in needs)]
+    return ready[:max(slots, 0)]
+
+
+def finished(states: dict[str, str]) -> bool:
+    return all(s in (DONE, FAILED, SKIPPED) for s in states.values())
+
+
+def phase_of(view: dict) -> str:
+    """Map a run's jobs to a phase: queued, building, publishing, verifying, done, failed."""
+    if view["status"] == "completed":
+        return DONE if view["conclusion"] == "success" else FAILED
+    names = {"build": "building", "publish": "publishing", "verify": "verifying"}
+    current = QUEUED
+    for job in view.get("jobs", []):
+        reached = job["status"] == "in_progress" or (job["status"] == "completed" and job["conclusion"] != "skipped")
+        if reached:
+            current = names.get(job["name"], current)
+    return current
+
+
+ICONS = {DONE: "\033[32m✔\033[0m", FAILED: "\033[31m✘\033[0m", SKIPPED: "\033[33m–\033[0m",
+         WAITING: "\033[2m⏸\033[0m"}
+
+
+def elapsed(seconds: float) -> str:
+    minutes, secs = divmod(int(seconds), 60)
+    return f"{minutes}m{secs:02d}s" if minutes else f"{secs}s"
+
+
+def render(the_plan: dict, deps: dict[str, set[str]], states: dict[str, str],
+           started: dict[str, float], ended: dict[str, float], now: float) -> list[tuple[str, str]]:
+    """(state key, line) per formula; the key changes only when the state does."""
+    width = max(len(n) for n in the_plan["formulae"])
+    lines = []
+    for name, info in the_plan["formulae"].items():
+        note = "" if info.get("runtime", True) else "  (build-time)"
+        if name not in deps:
+            label = "official bottle" if info["source"] == "official" else "mybrew bottle"
+            lines.append((f"{name}:static", f"  {ICONS[DONE]} {name:<{width}}  {label}{note}"))
+            continue
+        state = states[name]
+        if state == WAITING:
+            waiting = sorted(d for d in deps[name] if states[d] != DONE)
+            text = f"waiting for {', '.join(waiting)}" if waiting else "ready"
+        elif state == SKIPPED:
+            text = "skipped: a dependency failed"
+        elif state in (DONE, FAILED):
+            text = f"{'built' if state == DONE else 'failed'} in {elapsed(ended[name] - started[name])}"
+        else:
+            text = f"{state} {elapsed(now - started[name])}"
+        icon = ICONS.get(state, "\033[34m⟳\033[0m")
+        key = f"{name}:{state}:{text if state == WAITING else ''}"
+        lines.append((key, f"  {icon} {name:<{width}}  {text}{note}"))
+    return lines
+
+
 # --- GitHub ----------------------------------------------------------------
 
 def require_gh() -> None:
@@ -154,44 +250,89 @@ def require_gh() -> None:
         raise MybrewError("building needs the GitHub CLI, logged in: `gh auth login`") from error
 
 
-def trigger_build(repo: str, formula: str) -> int:
-    since = datetime.now(timezone.utc) - timedelta(seconds=30)
-    run("gh", "workflow", "run", WORKFLOW, "--repo", repo, "-f", f"formula={formula}")
-    for _ in range(20):
-        time.sleep(3)
-        runs = json.loads(run("gh", "run", "list", "--repo", repo, "--workflow", WORKFLOW,
-                              "--event", "workflow_dispatch", "--limit", "20",
-                              "--json", "databaseId,displayTitle,createdAt"))
-        run_id = find_run(runs, formula, since)
-        if run_id:
-            return run_id
-    raise MybrewError(f"started a build of {formula} but could not find its run on {repo}")
+def list_runs(repo: str) -> list[dict]:
+    return json.loads(run("gh", "run", "list", "--repo", repo, "--workflow", WORKFLOW, "--event",
+                          "workflow_dispatch", "--limit", "50", "--json", "databaseId,displayTitle,createdAt,status"))
 
 
-def wait_for_run(repo: str, run_id: int) -> None:
-    url = f"https://github.com/{repo}/actions/runs/{run_id}"
-    say(f"Building on GitHub: {url}")
-    seen: dict[str, str] = {}
-    while True:
-        view = json.loads(run("gh", "run", "view", str(run_id), "--repo", repo, "--json", "status,conclusion,jobs"))
-        for job in view["jobs"]:
-            state = job["conclusion"] or job["status"]
-            if seen.get(job["name"]) != state:
-                seen[job["name"]] = state
-                print(f"    {job['name']}: {state}", flush=True)
-        if view["status"] == "completed":
-            if view["conclusion"] != "success":
-                raise MybrewError(f"build {view['conclusion']}: {url}")
-            return
-        time.sleep(POLL_SECONDS)
+class Display:
+    """Redraws the status block in place on a terminal; prints changes otherwise."""
+
+    def __init__(self, stream=sys.stdout):
+        self.stream, self.tty, self.drawn, self.printed = stream, stream.isatty(), 0, set()
+
+    def show(self, rows: list[tuple[str, str]]) -> None:
+        if self.tty:
+            if self.drawn:
+                self.stream.write(f"\033[{self.drawn}F")
+            for _, line in rows:
+                self.stream.write(f"\033[2K{line}\n")
+            self.drawn = len(rows)
+        else:
+            for key, line in rows:
+                if key not in self.printed:
+                    self.printed.add(key)
+                    self.stream.write(line + "\n")
+        self.stream.flush()
+
+
+def build_missing(repo: str, the_plan: dict, parallel: int) -> None:
+    """Build every formula in the plan's order as its own run, dependencies first."""
+    deps = graph(the_plan)
+    states = {n: WAITING for n in deps}
+    runs: dict[str, int | None] = {}
+    since: dict[str, datetime] = {}
+    started: dict[str, float] = {}
+    ended: dict[str, float] = {}
+    display = Display()
+
+    for name, run_id in active_runs(list_runs(repo)).items():
+        if name in states:
+            states[name], runs[name], started[name] = "dispatched", run_id, time.time()
+
+    try:
+        while True:
+            for name in advance(deps, states, parallel):
+                since[name] = datetime.now(timezone.utc) - timedelta(seconds=30)
+                verify = "true" if name == the_plan["target"] else "false"
+                run("gh", "workflow", "run", WORKFLOW, "--repo", repo, "-f", f"formula={name}",
+                    "-f", "single=true", "-f", f"verify={verify}")
+                states[name], runs[name], started[name] = "dispatched", None, time.time()
+
+            unresolved = [n for n, r in runs.items() if r is None]
+            if unresolved:
+                listed = list_runs(repo)
+                for name in unresolved:
+                    runs[name] = find_run(listed, name, since[name])
+
+            for name, run_id in runs.items():
+                if run_id is None or states[name] in (DONE, FAILED):
+                    continue
+                view = json.loads(run("gh", "run", "view", str(run_id), "--repo", repo,
+                                      "--json", "status,conclusion,jobs"))
+                states[name] = phase_of(view)
+                if states[name] in (DONE, FAILED):
+                    ended[name] = time.time()
+
+            display.show(render(the_plan, deps, states, started, ended, time.time()))
+            if finished(states):
+                break
+            time.sleep(POLL_SECONDS)
+    except KeyboardInterrupt:
+        raise MybrewError("interrupted; builds already started keep running on GitHub. "
+                          "Run mybrew again to pick them up.") from None
+
+    failed = [n for n, s in states.items() if s == FAILED]
+    if failed:
+        links = "\n  ".join(f"{n}: https://github.com/{repo}/actions/runs/{runs[n]}" for n in failed)
+        raise MybrewError(f"build failed:\n  {links}")
 
 
 # --- commands --------------------------------------------------------------
 
 def load_plan(tap: Tap, formula: str) -> dict:
     run("git", "-C", str(tap.path), "pull", "--ff-only", "--quiet")
-    registry = json.loads(tap.registry_path.read_text()) if tap.registry_path.exists() else {}
-    return plan(formula, registry)
+    return plan(formula, load_registry(tap.registry_dir))
 
 
 def cmd_plan(tap: Tap, formulae: list[str]) -> None:
@@ -201,20 +342,21 @@ def cmd_plan(tap: Tap, formulae: list[str]) -> None:
             print(f"    {line}")
 
 
-def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool) -> None:
+def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, parallel: int) -> None:
     for formula in formulae:
         say(f"Checking {formula}")
         the_plan = load_plan(tap, formula)
-        for line in describe(the_plan):
-            print(f"    {line}")
 
         if the_plan["order"]:
             if not allow_build:
                 raise MybrewError(f"no bottle for {' '.join(the_plan['order'])} (--no-build given)")
             require_gh()
-            say(f"Requesting bottles for {' '.join(the_plan['order'])}")
-            wait_for_run(tap.repo, trigger_build(tap.repo, formula))
+            say(f"Building {len(the_plan['order'])} bottle(s) on github.com/{tap.repo}")
+            build_missing(tap.repo, the_plan, parallel)
             the_plan = load_plan(tap, formula)
+        else:
+            for line in describe(the_plan):
+                print(f"    {line}")
 
         steps = install_steps(the_plan, tap.name, lambda name: installed_kegs(cellar, name))
         if not steps:
@@ -249,7 +391,8 @@ def main(argv: list[str]) -> int:
             cmd_plan(tap, names)
         else:
             cellar = Path(run("brew", "--cellar").strip())
-            cmd_install(tap, cellar, names, allow_build="--no-build" not in rest)
+            parallel = int(os.environ.get("MYBREW_PARALLEL", DEFAULT_PARALLEL))
+            cmd_install(tap, cellar, names, allow_build="--no-build" not in rest, parallel=parallel)
     except MybrewError as error:
         print(f"\033[1;31mError:\033[0m {error}", file=sys.stderr)
         return 1

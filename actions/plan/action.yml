@@ -5,6 +5,9 @@ inputs:
   formula:
     description: homebrew/core formula the user wants installed
     required: true
+  single:
+    description: '"true" fails the run unless the formula is the only thing to build'
+    default: "false"
   tap-dir:
     description: Path to the checked-out tap repository
     default: ${{ github.workspace }}
@@ -29,7 +32,9 @@ runs:
         FORMULA: ${{ inputs.formula }}
         TAP_DIR: ${{ inputs.tap-dir }}
         PLAN_FILE: ${{ inputs.plan-file }}
+        SINGLE: ${{ inputs.single }}
       run: |
         mkdir -p "$(dirname "$PLAN_FILE")"
-        python3 "${{ github.action_path }}/../../scripts/plan_build.py" "$FORMULA" \
-          "$TAP_DIR/registry/bottles.json" "$PLAN_FILE" >> "$GITHUB_OUTPUT"
+        flag=(); [[ "$SINGLE" == true ]] && flag=(--single)
+        python3 "${{ github.action_path }}/../../scripts/plan_build.py" "${flag[@]}" "$FORMULA" \
+          "$TAP_DIR/registry" "$PLAN_FILE" >> "$GITHUB_OUTPUT"

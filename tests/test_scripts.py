@@ -6,8 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from assemble_publish import render_block, validate  # noqa: E402
 from import_formula import prepare, strip_bottle_block  # noqa: E402
-from plan_build import plan  # noqa: E402
-from update_registry import record  # noqa: E402
+import json  # noqa: E402
+import tempfile  # noqa: E402
+
+from plan_build import load_registry, plan, single_violation  # noqa: E402
+from update_registry import entries  # noqa: E402
 
 FORMULA = """class Dos2unix < Formula
   desc "Convert text between DOS, UNIX, and Mac formats"
@@ -104,20 +107,29 @@ class ValidateTest(unittest.TestCase):
         self.assertIn(f'sha256 cellar: "/usr/local/Cellar", sequoia: "{SHA}"', block)
 
 
-class RecordTest(unittest.TestCase):
+class RegistryTest(unittest.TestCase):
     PLAN = {
-        "order": ["calc"],
-        "formulae": {"readline": {"version": "8.3", "mybrew_dependencies": []},
-                     "calc": {"version": "2.17", "mybrew_dependencies": ["readline"]}},
-        "bottles": {"calc": {"filename": "calc-2.17.sequoia.bottle.tar.gz", "sha256": "f00", "root_url": "https://r"}},
+        "order": ["cmake", "calc"],
+        "formulae": {"readline": {"version": "8.3", "mybrew_dependencies": [], "runtime": True},
+                     "cmake": {"version": "4.4", "mybrew_dependencies": [], "runtime": False},
+                     "calc": {"version": "2.17", "mybrew_dependencies": ["readline"], "runtime": True}},
+        "bottles": {"cmake": {"filename": "cmake-4.4.sequoia.bottle.tar.gz", "sha256": "c0", "root_url": "https://r"},
+                    "calc": {"filename": "calc-2.17.sequoia.bottle.tar.gz", "sha256": "f00", "root_url": "https://r"}},
     }
 
-    def test_records_only_built_formulae_from_trusted_plan(self):
-        registry = record({}, self.PLAN, "now")
-        self.assertEqual(list(registry), ["calc"])
-        self.assertEqual(registry["calc"]["version"], "2.17")
-        self.assertEqual(registry["calc"]["mybrew_dependencies"], ["readline"])
-        self.assertEqual(registry["calc"]["bottles"]["sequoia"]["sha256"], "f00")
+    def test_entries_only_for_built_formulae(self):
+        result = entries(self.PLAN, {}, "now")
+        self.assertEqual(sorted(result), ["calc", "cmake"])
+        self.assertEqual(result["calc"]["mybrew_dependencies"], ["readline"])
+        self.assertEqual(result["calc"]["bottles"]["sequoia"]["sha256"], "f00")
+        self.assertTrue(result["cmake"]["build_time_only"])
+
+    def test_load_registry_merges_legacy_file_and_per_formula_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d)
+            (path / "bottles.json").write_text(json.dumps({"calc": {"version": "1"}, "dos2unix": {"version": "7"}}))
+            (path / "calc.json").write_text(json.dumps({"version": "2"}))
+            self.assertEqual(load_registry(path), {"calc": {"version": "2"}, "dos2unix": {"version": "7"}})
 
 
 def api(version, deps=(), tags=(), build=(), test=()):
@@ -179,6 +191,15 @@ class PlanTest(unittest.TestCase):
         result = self.plan("tool")
         self.assertEqual(result["order"], ["cmake", "tool"])
         self.assertEqual(result["formulae"]["pkgconf"]["source"], "official")
+
+    def test_requires_lists_every_edge_walked(self):
+        result = self.plan("tool")
+        self.assertEqual(result["formulae"]["tool"]["requires"], ["pkgconf", "cmake"])
+        self.assertEqual(result["formulae"]["pkgconf"]["requires"], [])
+
+    def test_single_refuses_when_dependencies_still_need_building(self):
+        self.assertIn("readline", single_violation(self.plan("calc")))
+        self.assertIsNone(single_violation(self.plan("calc", {"readline": {"version": "8.3"}})))
 
     def test_outdated_registry_entry_is_rebuilt(self):
         result = self.plan("calc", {"readline": {"version": "8.2"}})

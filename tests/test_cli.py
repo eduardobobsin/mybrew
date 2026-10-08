@@ -5,7 +5,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from mybrew_cli import MybrewError, brew_env, find_run, install_steps  # noqa: E402
+import io  # noqa: E402
+
+from mybrew_cli import (  # noqa: E402
+    DONE, FAILED, SKIPPED, WAITING, Display, MybrewError, active_runs, advance, brew_env, find_run, finished,
+    graph, install_steps, phase_of, render,
+)
 
 TAP = "me/mybrew"
 
@@ -81,6 +86,105 @@ class FindRunTest(unittest.TestCase):
 
     def test_ignores_older_runs(self):
         self.assertIsNone(find_run(self.RUNS[:1], "calc", self.SINCE))
+
+
+LIBZIP = {
+    "target": "libzip",
+    "order": ["xz", "cmake", "lz4", "libzip"],
+    "formulae": {
+        "xz": {"version": "5.8", "source": "build", "runtime": True, "requires": []},
+        "cmake": {"version": "4.4", "source": "build", "runtime": False, "requires": []},
+        "lz4": {"version": "1.10", "source": "build", "runtime": True, "requires": ["cmake"]},
+        "zstd": {"version": "1.5", "source": "official", "runtime": True, "requires": []},
+        "libzip": {"version": "1.12", "source": "build", "runtime": True, "requires": ["xz", "lz4", "zstd"]},
+    },
+}
+
+
+class SchedulerTest(unittest.TestCase):
+    def setUp(self):
+        self.deps = graph(LIBZIP)
+        self.states = {n: WAITING for n in self.deps}
+
+    def test_graph_keeps_only_edges_to_formulae_being_built(self):
+        self.assertEqual(self.deps["libzip"], {"xz", "lz4"})
+        self.assertEqual(self.deps["lz4"], {"cmake"})
+
+    def test_independent_leaves_start_together(self):
+        self.assertEqual(advance(self.deps, self.states, 4), ["xz", "cmake"])
+
+    def test_parallel_limit_is_respected(self):
+        self.assertEqual(advance(self.deps, self.states, 1), ["xz"])
+        self.states["xz"] = "building"
+        self.assertEqual(advance(self.deps, self.states, 1), [])
+
+    def test_dependents_start_once_dependencies_are_done(self):
+        self.states.update(xz=DONE, cmake=DONE)
+        self.assertEqual(advance(self.deps, self.states, 4), ["lz4"])
+        self.states["lz4"] = DONE
+        self.assertEqual(advance(self.deps, self.states, 4), ["libzip"])
+
+    def test_failure_skips_everything_downstream_but_not_siblings(self):
+        self.states.update(cmake=FAILED, xz="building")
+        self.assertEqual(advance(self.deps, self.states, 4), [])
+        self.assertEqual(self.states["lz4"], SKIPPED)
+        self.assertEqual(self.states["libzip"], SKIPPED)
+        self.assertFalse(finished(self.states))
+        self.states["xz"] = DONE
+        self.assertTrue(finished(self.states))
+
+
+class PhaseTest(unittest.TestCase):
+    def view(self, status="in_progress", conclusion="", **jobs):
+        return {"status": status, "conclusion": conclusion,
+                "jobs": [{"name": n, "status": s.split("/")[0], "conclusion": (s.split("/") + [""])[1]}
+                         for n, s in jobs.items()]}
+
+    def test_phases_follow_the_jobs(self):
+        self.assertEqual(phase_of(self.view(status="queued")), "queued")
+        self.assertEqual(phase_of(self.view(build="in_progress")), "building")
+        self.assertEqual(phase_of(self.view(build="completed/success", publish="in_progress")), "publishing")
+        self.assertEqual(phase_of(self.view(build="completed/success", publish="completed/success",
+                                            verify="in_progress")), "verifying")
+
+    def test_skipped_job_is_not_a_phase(self):
+        view = self.view(build="completed/success", publish="completed/success", verify="completed/skipped")
+        self.assertEqual(phase_of(view), "publishing")
+
+    def test_completed_run(self):
+        self.assertEqual(phase_of(self.view("completed", "success")), DONE)
+        self.assertEqual(phase_of(self.view("completed", "failure")), FAILED)
+
+
+class RenderTest(unittest.TestCase):
+    def test_lines_describe_each_formula(self):
+        deps = graph(LIBZIP)
+        states = {"xz": DONE, "cmake": "building", "lz4": WAITING, "libzip": WAITING}
+        rows = render(LIBZIP, deps, states, {"xz": 0, "cmake": 0}, {"xz": 192}, 840)
+        text = "\n".join(line for _, line in rows)
+        self.assertIn("xz      built in 3m12s", text)
+        self.assertIn("cmake   building 14m00s  (build-time)", text)
+        self.assertIn("lz4     waiting for cmake", text)
+        self.assertIn("libzip  waiting for lz4", text)
+        self.assertIn("zstd    official bottle", text)
+
+    def test_non_terminal_prints_only_state_changes(self):
+        out = io.StringIO()
+        display = Display(out)
+        deps, states = graph(LIBZIP), {"xz": "building", "cmake": "building", "lz4": WAITING, "libzip": WAITING}
+        display.show(render(LIBZIP, deps, states, {"xz": 0, "cmake": 0}, {}, 10))
+        display.show(render(LIBZIP, deps, states, {"xz": 0, "cmake": 0}, {}, 20))
+        self.assertEqual(out.getvalue().count("building"), 2)
+
+
+class ActiveRunsTest(unittest.TestCase):
+    def test_newest_unfinished_run_per_formula(self):
+        runs = [
+            {"databaseId": 1, "displayTitle": "Build cmake", "createdAt": "2026-10-08T01:00:00Z", "status": "in_progress"},
+            {"databaseId": 2, "displayTitle": "Build cmake", "createdAt": "2026-10-08T01:05:00Z", "status": "queued"},
+            {"databaseId": 3, "displayTitle": "Build xz", "createdAt": "2026-10-08T01:05:00Z", "status": "completed"},
+        ]
+        self.assertEqual(active_runs(runs), {"cmake": 2})
 
 
 if __name__ == "__main__":
