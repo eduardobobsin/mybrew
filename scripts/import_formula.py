@@ -6,7 +6,10 @@ Homebrew JSON API reports for it, and verified against the API's
 SHA-256 checksum. Then:
 - the upstream `bottle do ... end` block is removed (it describes official
   bottles on Homebrew's registry), or replaced by a mybrew bottle block;
-- stanzas Homebrew only accepts in official taps (`no_autobump!`) are removed.
+- stanzas Homebrew only accepts in official taps (`no_autobump!`) are removed;
+- the formula's aliases are recreated as Aliases/<alias> symlinks, because
+  brew links opt/<alias> from them and build shims rely on that (pkgconf is
+  invoked as opt/pkg-config).
 
 Usage: import_formula.py <formula> <tap-dir> [<bottle-block-file>]
 Prints `version=<x>` and `path=<file>` lines (GitHub Actions output format).
@@ -65,7 +68,20 @@ def import_formula(name: str, tap_dir: Path, bottle_block: str | None = None) ->
     dest = tap_dir / "Formula" / f"{name}.rb"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(prepare(source.decode(), bottle_block))
+    write_aliases(name, meta.get("aliases", []), tap_dir)
     return meta["versions"]["stable"], dest
+
+
+def write_aliases(name: str, aliases: list[str], tap_dir: Path) -> None:
+    directory = tap_dir / "Aliases"
+    for alias in aliases:
+        if "/" in alias or alias.startswith("."):
+            raise SystemExit(f"refusing alias {alias!r} for {name}")
+        directory.mkdir(exist_ok=True)
+        link = directory / alias
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(f"../Formula/{name}.rb")
 
 
 def main() -> None:

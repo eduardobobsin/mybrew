@@ -110,6 +110,18 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(self.deps["libzip"], {"xz", "lz4"})
         self.assertEqual(self.deps["lz4"], {"cmake"})
 
+    def test_waits_for_builds_hidden_behind_bottled_formulae(self):
+        the_plan = {
+            "target": "libvmaf", "order": ["python@3.14", "libvmaf"],
+            "formulae": {
+                "python@3.14": {"source": "build", "requires": []},
+                "meson": {"source": "official", "requires": ["python@3.14"]},
+                "ninja": {"source": "mybrew", "requires": []},
+                "libvmaf": {"source": "build", "requires": ["meson", "ninja"]},
+            },
+        }
+        self.assertEqual(graph(the_plan)["libvmaf"], {"python@3.14"})
+
     def test_independent_leaves_start_together(self):
         self.assertEqual(advance(self.deps, self.states, 4), ["xz", "cmake"])
 

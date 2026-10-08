@@ -5,7 +5,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 from assemble_publish import render_block, validate  # noqa: E402
-from import_formula import prepare, strip_bottle_block  # noqa: E402
+from import_formula import prepare, strip_bottle_block, write_aliases  # noqa: E402
 import json  # noqa: E402
 import tempfile  # noqa: E402
 
@@ -105,6 +105,20 @@ class ValidateTest(unittest.TestCase):
         block = render_block("https://r", {"cellar": "/usr/local/Cellar", "rebuild": 2, "sha256": SHA})
         self.assertIn("    rebuild 2\n", block)
         self.assertIn(f'sha256 cellar: "/usr/local/Cellar", sequoia: "{SHA}"', block)
+
+
+class AliasTest(unittest.TestCase):
+    def test_writes_relative_symlinks_to_the_formula(self):
+        with tempfile.TemporaryDirectory() as d:
+            write_aliases("pkgconf", ["pkg-config", "pkgconfig"], Path(d))
+            link = Path(d) / "Aliases" / "pkg-config"
+            self.assertEqual(str(link.readlink() if hasattr(link, "readlink") else __import__("os").readlink(link)),
+                             "../Formula/pkgconf.rb")
+            self.assertTrue((Path(d) / "Aliases" / "pkgconfig").is_symlink())
+
+    def test_refuses_path_like_aliases(self):
+        with tempfile.TemporaryDirectory() as d, self.assertRaises(SystemExit):
+            write_aliases("x", ["../../etc/passwd"], Path(d))
 
 
 class RegistryTest(unittest.TestCase):

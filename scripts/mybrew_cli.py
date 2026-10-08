@@ -172,9 +172,30 @@ RUNNING = ("dispatched", QUEUED, "building", "publishing", "verifying")
 
 
 def graph(the_plan: dict) -> dict[str, set[str]]:
-    """For each formula to build, the other to-build formulae it waits for."""
-    order = set(the_plan["order"])
-    return {n: set(the_plan["formulae"][n].get("requires", [])) & order for n in the_plan["order"]}
+    """For each formula to build, the other to-build formulae it waits for.
+
+    Edges are followed through formulae that come from bottles: libvmaf needs
+    meson (official bottle), which needs python@3.14 (to build), so libvmaf
+    waits for python@3.14. The walk stops at a to-build formula, which waits
+    for its own dependencies.
+    """
+    formulae, order = the_plan["formulae"], set(the_plan["order"])
+
+    def reachable(name: str) -> set[str]:
+        found: set[str] = set()
+        stack, seen = list(formulae[name].get("requires", [])), set()
+        while stack:
+            dep = stack.pop()
+            if dep in seen:
+                continue
+            seen.add(dep)
+            if dep in order:
+                found.add(dep)
+            else:
+                stack.extend(formulae[dep].get("requires", []))
+        return found
+
+    return {n: reachable(n) for n in the_plan["order"]}
 
 
 def advance(deps: dict[str, set[str]], states: dict[str, str], parallel: int) -> list[str]:
