@@ -48,6 +48,10 @@ Formulae from other taps (`mybrew install owner/tap/name`) get their homebrew/co
 from mybrew, built on GitHub where missing, and brew compiles only the formula itself locally.
 mybrew never runs another tap's code on GitHub.
 
+The client plans from a local copy of the formula catalogue in `~/Library/Caches/mybrew`
+(override with `MYBREW_CACHE`), refreshed by the API's own cache rules, and caches other taps'
+dependency lists per tap commit. The build workflow still asks the API per formula.
+
 Anything else (`mybrew list`, `mybrew upgrade`, ...) is passed to `brew`. Building needs `gh`, logged in.
 
 ## Actions

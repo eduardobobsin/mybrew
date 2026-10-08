@@ -41,7 +41,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from plan_build import load_registry, plan
+from catalogue import Catalogue, cache_dir
+from plan_build import fetch_api, load_registry, plan
 from progress import LogReader, bar, estimate, last_timestamp, phase_of_log, position
 
 WORKFLOW = "build.yml"
@@ -607,6 +608,22 @@ def unique(steps: list[list[str]]) -> list[list[str]]:
     return result
 
 
+_CATALOGUE: dict | None = None
+
+
+def catalogue_fetch(name: str) -> dict:
+    """Formula metadata from the local catalogue; the per-formula API for anything
+    it lacks (a formula newer than the cached copy) or when it cannot be loaded."""
+    global _CATALOGUE
+    if _CATALOGUE is None:
+        try:
+            _CATALOGUE = Catalogue(cache_dir()).load()
+        except (OSError, ValueError) as error:
+            print(f"mybrew: formula catalogue unavailable ({error}); asking the API per formula", file=sys.stderr)
+            _CATALOGUE = {}
+    return _CATALOGUE.get(name) or fetch_api(name)
+
+
 def build_history(tap: Tap) -> dict[str, float]:
     """Previous build durations by formula, for progress estimates."""
     return {n: e["build_seconds"] for n, e in load_registry(tap.registry_dir).items() if e.get("build_seconds")}
@@ -617,7 +634,7 @@ def load_plan(tap: Tap, formula: str) -> dict:
         run("git", "-C", str(tap.path), "pull", "--ff-only", "--quiet")
         tap.fresh = True
     try:
-        return plan(formula, load_registry(tap.registry_dir))
+        return plan(formula, load_registry(tap.registry_dir), fetch=catalogue_fetch)
     except urllib.error.HTTPError as error:
         if error.code == 404:
             raise MybrewError(f"no homebrew/core formula named {error.url.rsplit('/', 1)[-1][:-5]}") from None
@@ -674,12 +691,35 @@ def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, 
             run(*step, capture=False)
 
 
-def third_party_deps(formula: str) -> tuple[list[str], list[str]]:
-    """Direct dependencies (runtime and build) of another tap's formula, as (core, other)."""
-    try:
-        names = run("brew", "deps", "--include-build", "--direct", "--full-name", formula).split()
-    except MybrewError as error:
-        raise MybrewError(f"cannot read {formula}'s dependencies (is its tap tapped and trusted?): {error}") from None
+def third_party_deps(formula: str, brew_repository: Path | None = None) -> tuple[list[str], list[str]]:
+    """Direct dependencies (runtime and build) of another tap's formula, as (core, other).
+
+    `brew deps` evaluates the tap's Ruby and takes seconds, so the answer is
+    cached per formula and per commit of that tap: it changes only when the
+    tap does.
+    """
+    owner, short, _ = formula.split("/")
+    key, cache = None, cache_dir() / "deps.json"
+    if brew_repository:
+        tap_dir = brew_repository / "Library" / "Taps" / owner / f"homebrew-{short}"
+        try:
+            key = f"{formula}@{run('git', '-C', str(tap_dir), 'rev-parse', 'HEAD').strip()}"
+        except MybrewError:
+            key = None
+    known = json.loads(cache.read_text()) if key and cache.exists() else {}
+    if key and key in known:
+        names = known[key]
+    else:
+        try:
+            names = run("brew", "deps", "--include-build", "--direct", "--full-name", formula).split()
+        except MybrewError as error:
+            raise MybrewError(f"cannot read {formula}'s dependencies (is its tap tapped and trusted?): "
+                              f"{error}") from None
+        if key:
+            known = {k: v for k, v in known.items() if not k.startswith(f"{formula}@")}
+            known[key] = names
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.write_text(json.dumps(known, indent=1))
     core = [n for n in names if core_name(n)]
     return [core_name(n) for n in core], [n for n in names if not core_name(n)]
 
@@ -687,7 +727,7 @@ def third_party_deps(formula: str) -> tuple[list[str], list[str]]:
 def cmd_third_party(tap: Tap, cellar: Path, formula: str, allow_build: bool, parallel: int,
                     replace: bool, install: bool) -> None:
     say(f"Checking {formula} (from another tap; brew compiles it here)")
-    core, other = third_party_deps(formula)
+    core, other = third_party_deps(formula, tap.path.parent.parent.parent.parent)
     plans = [load_plan(tap, dep) for dep in core]
     merged = merge_plans(plans)
     if other:
