@@ -9,7 +9,9 @@ only after their metadata checks out. Concretely:
   the plan and the expected root URL, and its tarball's SHA-256 is checked;
 - each formula is re-imported from homebrew-core (checksum-verified) and
   given a bottle block rendered here from the validated fields.
-Formula files and plan.json in the artifact are ignored and deleted.
+Formula files and plan.json in the artifact are ignored and deleted. The
+validated bottle fields go into <plan-out>, the only input the registry
+update reads.
 
 Usage: assemble_publish.py <target> <tap> <root-url> <tap-dir> <bottle-dir> <plan-out>
 Prints GitHub Actions outputs:
@@ -99,6 +101,7 @@ def main() -> None:
         fail("plan is empty; nothing should have been built")
 
     uploads = []
+    trusted["bottles"] = {}
     for name in trusted["order"]:
         version = trusted["formulae"][name]["version"]
         candidates = list(bottle_dir.glob(f"{name}--*.bottle.json"))
@@ -112,6 +115,7 @@ def main() -> None:
         if version.split("_")[0] != imported_version:
             fail(f"{name}: homebrew-core moved to {imported_version} during the build")
         uploads.append(f"{bottle['filename']}:{bottle['key']}")
+        trusted["bottles"][name] = {"filename": bottle["filename"], "sha256": bottle["sha256"], "root_url": root_url}
 
     plan_out.write_text(json.dumps(trusted, indent=2) + "\n")
     install = [n for n, f in trusted["formulae"].items() if f["source"] != "official"]

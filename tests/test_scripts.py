@@ -105,34 +105,19 @@ class ValidateTest(unittest.TestCase):
 
 
 class RecordTest(unittest.TestCase):
-    def test_records_each_tag(self):
-        bottle_json = {
-            "eduardobobsin/mybrew/dos2unix": {
-                "formula": {"pkg_version": "7.5.2"},
-                "bottle": {
-                    "root_url": "https://example.com/bottles",
-                    "tags": {"sequoia": {"filename": "dos2unix--7.5.2.sequoia.bottle.tar.gz", "sha256": "f00"}},
-                },
-            }
-        }
-        registry = record({}, bottle_json, "2026-10-07T00:00:00+00:00")
-        self.assertEqual(registry["dos2unix"]["version"], "7.5.2")
-        self.assertEqual(registry["dos2unix"]["bottles"]["sequoia"]["sha256"], "f00")
+    PLAN = {
+        "order": ["calc"],
+        "formulae": {"readline": {"version": "8.3", "mybrew_dependencies": []},
+                     "calc": {"version": "2.17", "mybrew_dependencies": ["readline"]}},
+        "bottles": {"calc": {"filename": "calc-2.17.sequoia.bottle.tar.gz", "sha256": "f00", "root_url": "https://r"}},
+    }
 
-    def test_records_mybrew_dependencies_from_plan(self):
-        bottle_json = {
-            "eduardobobsin/mybrew/calc": {
-                "formula": {"pkg_version": "2.17"},
-                "bottle": {"root_url": "https://example.com", "tags": {"sequoia": {"filename": "c", "sha256": "1"}}},
-            }
-        }
-        plan = {"order": ["calc"], "formulae": {"calc": {"mybrew_dependencies": ["readline"]}}}
-        registry = record({}, bottle_json, "now", plan)
+    def test_records_only_built_formulae_from_trusted_plan(self):
+        registry = record({}, self.PLAN, "now")
+        self.assertEqual(list(registry), ["calc"])
+        self.assertEqual(registry["calc"]["version"], "2.17")
         self.assertEqual(registry["calc"]["mybrew_dependencies"], ["readline"])
-
-    def test_ignores_bottles_outside_the_plan(self):
-        bottle_json = {"me/mybrew/evil": {"formula": {"pkg_version": "1"}, "bottle": {"root_url": "r", "tags": {}}}}
-        self.assertEqual(record({}, bottle_json, "now", {"order": ["calc"], "formulae": {}}), {})
+        self.assertEqual(registry["calc"]["bottles"]["sequoia"]["sha256"], "f00")
 
 
 def api(version, deps=(), tags=()):

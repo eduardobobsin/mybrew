@@ -76,5 +76,4 @@ runs:
       working-directory: ${{ inputs.tap-dir }}
       env:
         FORMULA: ${{ inputs.formula }}
-        BOTTLE_DIR: ${{ inputs.bottle-dir }}
-      run: '"${{ github.action_path }}/../../scripts/commit_formula.sh" "$FORMULA" "$RUNNER_TEMP/trusted-plan.json" "$BOTTLE_DIR"'
+      run: '"${{ github.action_path }}/../../scripts/commit_formula.sh" "$FORMULA" "$RUNNER_TEMP/trusted-plan.json"'
