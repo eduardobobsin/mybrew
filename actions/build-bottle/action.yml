@@ -1,9 +1,9 @@
 name: mybrew build bottles
-description: Build bottles for formulae in the calling tap, in order, and merge each bottle block into its formula.
+description: Follow a plan in dependency order - install existing mybrew bottles, build and bottle the rest - merging each bottle block into its formula.
 
 inputs:
-  formulae:
-    description: Space-separated formula names inside the calling tap, dependencies first
+  plan-file:
+    description: plan.json written by the plan action
     required: true
   root-url:
     description: Base URL the bottles will be downloaded from
@@ -45,9 +45,7 @@ runs:
     - name: Build, test and bottle
       shell: bash
       env:
-        FORMULAE: ${{ inputs.formulae }}
+        PLAN_FILE: ${{ inputs.plan-file }}
         ROOT_URL: ${{ inputs.root-url }}
         OUTPUT_DIR: ${{ inputs.output-dir }}
-      run: |
-        # shellcheck disable=SC2086
-        "${{ github.action_path }}/../../scripts/build_bottles.sh" "${{ steps.tap.outputs.tap }}" "$ROOT_URL" "$OUTPUT_DIR" $FORMULAE
+      run: '"${{ github.action_path }}/../../scripts/build_bottles.sh" "${{ steps.tap.outputs.tap }}" "$ROOT_URL" "$OUTPUT_DIR" "$PLAN_FILE"'

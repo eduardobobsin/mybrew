@@ -16,7 +16,7 @@ update reads.
 Usage: assemble_publish.py <target> <tap> <root-url> <tap-dir> <bottle-dir> <plan-out>
 Prints GitHub Actions outputs:
   uploads=<newline-free list of tarball:key pairs, space-separated>
-  install=<space-separated install order of all non-official formulae>
+  install=<space-separated install order of the non-official formulae users need at runtime>
 """
 
 from __future__ import annotations
@@ -120,7 +120,7 @@ def main() -> None:
         trusted["bottles"][name] = {"filename": bottle["filename"], "sha256": bottle["sha256"], "root_url": root_url}
 
     plan_out.write_text(json.dumps(trusted, indent=2) + "\n")
-    install = [n for n, f in trusted["formulae"].items() if f["source"] != "official"]
+    install = [n for n, f in trusted["formulae"].items() if f["source"] != "official" and f["runtime"]]
     print(f"uploads={' '.join(uploads)}")
     print(f"install={' '.join(install)}")
 

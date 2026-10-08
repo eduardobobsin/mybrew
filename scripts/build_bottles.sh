@@ -1,26 +1,47 @@
 #!/usr/bin/env bash
-# Build, test and bottle tap formulae in the given order (dependencies first),
-# merging each bottle block into its formula.
-# Usage: build_bottles.sh <tap> <root-url> <output-dir> <formula>...
+# Prepare and build everything a plan needs, dependencies first:
+#   mybrew  -> install our existing bottle from the tap (brew would otherwise
+#              resolve the name to homebrew/core, which has no Intel bottle)
+#   build   -> build, test and bottle from the tap, merging the bottle block
+#   official-> left to brew, which pours it when a dependent needs it
+# Usage: build_bottles.sh <tap> <root-url> <output-dir> <plan.json>
 set -euo pipefail
 export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_AUTOREMOVE=1
 
-tap="$1" root_url="$2" out="$3"; shift 3
+tap="$1" root_url="$2" out="$3" plan="$4"
 mkdir -p "$out"
 
-for formula in "$@"; do
-  echo "::group::${formula}"
-  # A runner image may ship the core formula of the same name; brew refuses to
-  # install one name from two taps.
-  if brew list --formula --versions "$formula" >/dev/null 2>&1; then
-    brew uninstall --formula --ignore-dependencies --force "$formula"
+# A runner image may ship a core formula of the same name; brew refuses to
+# install one name from two taps.
+clear_name() {
+  if brew list --formula --versions "$1" >/dev/null 2>&1; then
+    brew uninstall --formula --ignore-dependencies --force "$1"
   fi
-  brew install --build-bottle --verbose "${tap}/${formula}"
-  brew test --verbose "${tap}/${formula}"
-  (cd "$out" && brew bottle --json --root-url="$root_url" "${tap}/${formula}" &&
-    brew bottle --merge --write --no-commit "./${formula}--"*.bottle.json)
+}
+
+while read -r formula source; do
+  case "$source" in
+    mybrew)
+      echo "::group::${formula} (mybrew bottle)"
+      clear_name "$formula"
+      brew install "${tap}/${formula}"
+      ;;
+    build)
+      echo "::group::${formula} (build)"
+      clear_name "$formula"
+      brew install --build-bottle --verbose "${tap}/${formula}"
+      brew test --verbose "${tap}/${formula}"
+      (cd "$out" && brew bottle --json --root-url="$root_url" "${tap}/${formula}" &&
+        brew bottle --merge --write --no-commit "./${formula}--"*.bottle.json)
+      ;;
+    *) continue ;;
+  esac
   echo "::endgroup::"
-done
+done < <(python3 -c '
+import json, sys
+for name, info in json.load(open(sys.argv[1]))["formulae"].items():
+    print(name, info["source"])
+' "$plan")
 
 # brew writes tarballs under their local name; uploads must use the name the
 # formula will request.

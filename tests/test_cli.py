@@ -10,9 +10,9 @@ from mybrew_cli import MybrewError, brew_env, find_run, install_steps  # noqa: E
 TAP = "me/mybrew"
 
 
-def plan_of(target, formulae, order=()):
+def plan_of(target, formulae, order=(), build_time=()):
     return {"target": target, "order": list(order),
-            "formulae": {n: {"version": v, "source": s} for n, (v, s) in formulae.items()}}
+            "formulae": {n: {"version": v, "source": s, "runtime": n not in build_time} for n, (v, s) in formulae.items()}}
 
 
 CALC = plan_of("calc", {"readline": ("8.3", "mybrew"), "calc": ("2.17", "mybrew")})
@@ -50,6 +50,10 @@ class InstallStepsTest(unittest.TestCase):
     def test_target_from_another_tap_is_refused(self):
         with self.assertRaisesRegex(MybrewError, "brew uninstall calc"):
             self.steps(CALC, {"readline": {"version": "8.3", "tap": TAP}, "calc": {"version": "2.17", "tap": "homebrew/core"}})
+
+    def test_build_time_only_formulae_are_not_installed(self):
+        the_plan = plan_of("lz4", {"cmake": ("4.4", "mybrew"), "lz4": ("1.10", "mybrew")}, build_time=["cmake"])
+        self.assertEqual(self.steps(the_plan), [["brew", "install", "me/mybrew/lz4"]])
 
     def test_unbuilt_plan_is_refused(self):
         with self.assertRaises(MybrewError):

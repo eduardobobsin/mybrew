@@ -120,8 +120,9 @@ class RecordTest(unittest.TestCase):
         self.assertEqual(registry["calc"]["bottles"]["sequoia"]["sha256"], "f00")
 
 
-def api(version, deps=(), tags=()):
+def api(version, deps=(), tags=(), build=(), test=()):
     return {"versions": {"stable": version}, "revision": 0, "dependencies": list(deps),
+            "build_dependencies": list(build), "test_dependencies": list(test),
             "bottle": {"stable": {"files": {t: {} for t in tags}}}}
 
 
@@ -131,6 +132,11 @@ class PlanTest(unittest.TestCase):
         "readline": api("8.3", [], ["arm64_sequoia"]),
         "jdupes": api("1.31", ["libjodycode"], ["arm64_sequoia"]),
         "libjodycode": api("4.0", [], ["sonoma", "arm64_sequoia"]),
+        "lz4": api("1.10", [], ["arm64_sequoia"], build=["cmake"]),
+        "cmake": api("4.4", [], ["arm64_sequoia"]),
+        "zstd": api("1.5", ["lz4"], ["sonoma"], build=["not-in-api"]),
+        "pkgconf": api("2.5", [], ["sonoma"]),
+        "tool": api("1.0", [], ["arm64_sequoia"], build=["pkgconf"], test=["cmake"]),
     }
 
     def plan(self, target, registry=None):
@@ -151,6 +157,28 @@ class PlanTest(unittest.TestCase):
         result = self.plan("calc", {"readline": {"version": "8.3"}})
         self.assertEqual(result["order"], ["calc"])
         self.assertEqual(result["formulae"]["readline"]["source"], "mybrew")
+
+    def test_build_only_dependency_without_bottle_is_built_first_but_not_runtime(self):
+        result = self.plan("lz4")
+        self.assertEqual(result["order"], ["cmake", "lz4"])
+        self.assertFalse(result["formulae"]["cmake"]["runtime"])
+        self.assertTrue(result["formulae"]["lz4"]["runtime"])
+        self.assertEqual(result["formulae"]["lz4"]["mybrew_dependencies"], [])
+
+    def test_build_dependencies_of_bottled_formulae_are_not_walked(self):
+        result = self.plan("zstd")  # walking zstd's build deps would raise KeyError
+        self.assertEqual(result["order"], ["cmake", "lz4"])
+        self.assertEqual(result["formulae"]["zstd"]["mybrew_dependencies"], ["lz4"])
+
+    def test_cached_build_dependency_is_reused(self):
+        result = self.plan("lz4", {"cmake": {"version": "4.4"}})
+        self.assertEqual(result["order"], ["lz4"])
+        self.assertEqual(result["formulae"]["cmake"]["source"], "mybrew")
+
+    def test_test_dependencies_are_walked_and_official_build_deps_left_to_brew(self):
+        result = self.plan("tool")
+        self.assertEqual(result["order"], ["cmake", "tool"])
+        self.assertEqual(result["formulae"]["pkgconf"]["source"], "official")
 
     def test_outdated_registry_entry_is_rebuilt(self):
         result = self.plan("calc", {"readline": {"version": "8.2"}})

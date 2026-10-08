@@ -103,7 +103,7 @@ def install_steps(the_plan: dict, tap: str, installed) -> list[list[str]]:
 
     steps = []
     for name, info in formulae.items():
-        if info["source"] == "official" or name == target:
+        if info["source"] == "official" or name == target or not info.get("runtime", True):
             continue
         current = installed(name)
         if current is None:
@@ -133,7 +133,8 @@ def install_steps(the_plan: dict, tap: str, installed) -> list[list[str]]:
 
 def describe(the_plan: dict) -> list[str]:
     labels = {"official": "official bottle", "mybrew": "mybrew bottle", "build": "needs build"}
-    return [f"{name} {info['version']}: {labels[info['source']]}" for name, info in the_plan["formulae"].items()]
+    return [f"{name} {info['version']}: {labels[info['source']]}{'' if info.get('runtime', True) else ' (build-time only)'}"
+            for name, info in the_plan["formulae"].items()]
 
 
 def find_run(runs: list[dict], formula: str, since: datetime) -> int | None:
