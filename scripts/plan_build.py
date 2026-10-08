@@ -22,6 +22,7 @@ dependencies are published.
 
 from __future__ import annotations
 
+import functools
 import json
 import sys
 import urllib.request
@@ -34,7 +35,9 @@ API_URL = "https://formulae.brew.sh/api/formula/{name}.json"
 INTEL_MACOS_TAGS = {"tahoe", "sequoia", "sonoma", "ventura", "monterey", "big_sur", "catalina", "all"}
 
 
+@functools.lru_cache(maxsize=None)
 def fetch_api(name: str) -> dict:
+    """One API request per formula per process; plans for many targets share it."""
     with urllib.request.urlopen(API_URL.format(name=name), timeout=30) as response:
         return json.loads(response.read())
 

@@ -9,7 +9,7 @@ import io  # noqa: E402
 
 from mybrew_cli import (  # noqa: E402
     DONE, FAILED, SKIPPED, WAITING, Display, MybrewError, active_runs, advance, brew_env, find_run, finished,
-    Scheduler, graph, install_steps, phase_of, render, spinner_frames, step_progress,
+    Scheduler, core_name, graph, install_steps, merge_plans, unique, phase_of, render, spinner_frames, step_progress,
 )
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -315,6 +315,38 @@ class SchedulerClassTest(unittest.TestCase):
         self.assertEqual(states["xz"], DONE)
         self.assertEqual((states["lz4"], states["libzip"]), (SKIPPED, SKIPPED))
         self.assertEqual(list(scheduler.failures()), ["cmake"])
+
+
+class CoreNameTest(unittest.TestCase):
+    def test_plain_and_core_qualified_names(self):
+        self.assertEqual(core_name("libzip"), "libzip")
+        self.assertEqual(core_name("homebrew/core/libzip"), "libzip")
+
+    def test_other_taps_are_recognised(self):
+        self.assertIsNone(core_name("shivammathur/php/php@7.4"))
+
+    def test_malformed_names_are_refused(self):
+        with self.assertRaises(MybrewError):
+            core_name("a/b")
+
+
+class ThirdPartyTest(unittest.TestCase):
+    def test_merged_plan_keeps_dependency_order_and_has_no_target(self):
+        gd = {"target": "gd", "order": ["libpng", "gd"], "formulae": {
+            "libpng": {"version": "1", "source": "build", "requires": []},
+            "gd": {"version": "2", "source": "build", "requires": ["libpng"]}}}
+        curl = {"target": "curl", "order": ["libpng", "curl"], "formulae": {
+            "libpng": {"version": "1", "source": "build", "requires": []},
+            "zstd": {"version": "1", "source": "official", "requires": []},
+            "curl": {"version": "8", "source": "build", "requires": ["libpng", "zstd"]}}}
+        merged = merge_plans([gd, curl])
+        self.assertIsNone(merged["target"])
+        self.assertEqual(merged["order"], ["libpng", "gd", "curl"])
+        self.assertEqual(graph(merged)["curl"], {"libpng"})
+
+    def test_unique_keeps_first_occurrence(self):
+        steps = [["brew", "install", "a"], ["brew", "install", "b"], ["brew", "install", "a"]]
+        self.assertEqual(unique(steps), [["brew", "install", "a"], ["brew", "install", "b"]])
 
 
 class ActiveRunsTest(unittest.TestCase):

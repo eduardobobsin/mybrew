@@ -2,6 +2,10 @@
 
   mybrew install <formula>...   install, building bottles on GitHub if none exist
   mybrew plan <formula>...      show where each piece would come from; change nothing
+
+<formula> may also come from another tap (owner/tap/name). mybrew then supplies
+its homebrew/core dependencies as bottles, building missing ones on GitHub,
+and brew compiles only that formula itself on this Mac.
   mybrew <anything else>        passed through to brew
 
 Options for install:
@@ -29,6 +33,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -58,6 +63,7 @@ def say(message: str) -> None:
 class Tap:
     name: str  # owner/mybrew
     path: Path
+    fresh: bool = False  # pulled since the last build finished
 
     @property
     def repo(self) -> str:
@@ -468,13 +474,57 @@ def build_missing(repo: str, the_plan: dict, parallel: int) -> None:
 
 # --- commands --------------------------------------------------------------
 
+def core_name(formula: str) -> str | None:
+    """`foo` or `homebrew/core/foo` -> "foo"; owner/tap/foo from another tap -> None."""
+    parts = formula.split("/")
+    if len(parts) == 1:
+        return formula
+    if len(parts) == 3 and parts[:2] == ["homebrew", "core"]:
+        return parts[2]
+    if len(parts) == 3 and all(parts):
+        return None
+    raise MybrewError(f"not a formula name: {formula}")
+
+
+def merge_plans(plans: list[dict]) -> dict:
+    """One schedule for several targets' plans; each plan is deps-first, so is the union."""
+    formulae: dict[str, dict] = {}
+    for p in plans:
+        for name, info in p["formulae"].items():
+            formulae.setdefault(name, info)
+    return {"target": None, "order": [n for n, f in formulae.items() if f["source"] == "build"],
+            "formulae": formulae}
+
+
+def unique(steps: list[list[str]]) -> list[list[str]]:
+    seen, result = set(), []
+    for step in steps:
+        if tuple(step) not in seen:
+            seen.add(tuple(step))
+            result.append(step)
+    return result
+
+
 def load_plan(tap: Tap, formula: str) -> dict:
-    run("git", "-C", str(tap.path), "pull", "--ff-only", "--quiet")
-    return plan(formula, load_registry(tap.registry_dir))
+    if not tap.fresh:
+        run("git", "-C", str(tap.path), "pull", "--ff-only", "--quiet")
+        tap.fresh = True
+    try:
+        return plan(formula, load_registry(tap.registry_dir))
+    except urllib.error.HTTPError as error:
+        if error.code == 404:
+            raise MybrewError(f"no homebrew/core formula named {error.url.rsplit('/', 1)[-1][:-5]}") from None
+        raise MybrewError(f"Homebrew API error {error.code} for {formula}") from None
+    except urllib.error.URLError as error:
+        raise MybrewError(f"cannot reach the Homebrew API: {error.reason}") from None
 
 
 def cmd_plan(tap: Tap, formulae: list[str]) -> None:
     for formula in formulae:
+        if core_name(formula) is None:
+            cmd_third_party(tap, Path("/nonexistent"), formula, False, 0, False, install=False)
+            continue
+        formula = core_name(formula)
         say(f"{formula}")
         for line in describe(load_plan(tap, formula)):
             print(f"    {line}")
@@ -483,6 +533,10 @@ def cmd_plan(tap: Tap, formulae: list[str]) -> None:
 def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, parallel: int,
                 replace: bool = False) -> None:
     for formula in formulae:
+        if core_name(formula) is None:
+            cmd_third_party(tap, cellar, formula, allow_build, parallel, replace, install=True)
+            continue
+        formula = core_name(formula)
         say(f"Checking {formula}")
         the_plan = load_plan(tap, formula)
 
@@ -492,6 +546,7 @@ def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, 
             require_gh()
             say(f"Building {len(the_plan['order'])} bottle(s) on github.com/{tap.repo}")
             build_missing(tap.repo, the_plan, parallel)
+            tap.fresh = False
             the_plan = load_plan(tap, formula)
         else:
             for line in describe(the_plan):
@@ -510,6 +565,48 @@ def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, 
                     + (f" (used by: {', '.join(users)})" if users else ""))
             say(" ".join(step))
             run(*step, capture=False)
+
+
+def third_party_deps(formula: str) -> tuple[list[str], list[str]]:
+    """Direct dependencies (runtime and build) of another tap's formula, as (core, other)."""
+    try:
+        names = run("brew", "deps", "--include-build", "--direct", "--full-name", formula).split()
+    except MybrewError as error:
+        raise MybrewError(f"cannot read {formula}'s dependencies (is its tap tapped and trusted?): {error}") from None
+    core = [n for n in names if core_name(n)]
+    return [core_name(n) for n in core], [n for n in names if not core_name(n)]
+
+
+def cmd_third_party(tap: Tap, cellar: Path, formula: str, allow_build: bool, parallel: int,
+                    replace: bool, install: bool) -> None:
+    say(f"Checking {formula} (from another tap; brew compiles it here)")
+    core, other = third_party_deps(formula)
+    plans = [load_plan(tap, dep) for dep in core]
+    merged = merge_plans(plans)
+    if other:
+        print(f"    left to brew (other taps): {' '.join(other)}")
+    if merged["order"]:
+        if not install:
+            for line in describe(merged):
+                print(f"    {line}")
+            return
+        if not allow_build:
+            raise MybrewError(f"no bottle for {' '.join(merged['order'])} (--no-build given)")
+        require_gh()
+        say(f"Building {len(merged['order'])} bottle(s) for {formula}'s dependencies on github.com/{tap.repo}")
+        build_missing(tap.repo, merged, parallel)
+        tap.fresh = False
+        plans = [load_plan(tap, dep) for dep in core]
+    elif not install:
+        for line in describe(merged):
+            print(f"    {line}")
+        return
+
+    installed = lambda name: installed_kegs(cellar, name)  # noqa: E731
+    steps = unique([step for p in plans for step in install_steps(p, tap.name, installed, replace)])
+    for step in steps + [["brew", "install", formula]]:
+        say(" ".join(step))
+        run(*step, capture=False)
 
 
 def brew_env(env: dict) -> dict:
@@ -533,6 +630,8 @@ def main(argv: list[str]) -> int:
         return 2
     os.environ.update(brew_env(dict(os.environ)))
     try:
+        for n in names:
+            core_name(n)  # rejects malformed names early
         tap = find_tap(Path(run("brew", "--repository").strip()), os.environ)
         if command == "plan":
             cmd_plan(tap, names)

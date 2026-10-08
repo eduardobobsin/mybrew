@@ -39,6 +39,10 @@ in logs and pipes (or with `NO_COLOR`/`TERM=dumb`) it prints one line per change
 A failed formula skips only what depends on it; finished bottles stay cached. Ctrl-C leaves running
 builds alone, and the next `mybrew install` attaches to them.
 
+Formulae from other taps (`mybrew install owner/tap/name`) get their homebrew/core dependencies
+from mybrew, built on GitHub where missing, and brew compiles only the formula itself locally.
+mybrew never runs another tap's code on GitHub.
+
 Anything else (`mybrew list`, `mybrew upgrade`, ...) is passed to `brew`. Building needs `gh`, logged in.
 
 ## Actions
