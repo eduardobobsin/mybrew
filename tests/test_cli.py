@@ -5,7 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
-from mybrew_cli import MybrewError, find_run, install_steps  # noqa: E402
+from mybrew_cli import MybrewError, brew_env, find_run, install_steps  # noqa: E402
 
 TAP = "me/mybrew"
 
@@ -54,6 +54,14 @@ class InstallStepsTest(unittest.TestCase):
     def test_unbuilt_plan_is_refused(self):
         with self.assertRaises(MybrewError):
             self.steps(plan_of("calc", {"calc": ("2.17", "build")}, order=["calc"]))
+
+
+class BrewEnvTest(unittest.TestCase):
+    def test_defaults_auto_update_off(self):
+        self.assertEqual(brew_env({})["HOMEBREW_NO_AUTO_UPDATE"], "1")
+
+    def test_respects_users_choice(self):
+        self.assertEqual(brew_env({"HOMEBREW_NO_AUTO_UPDATE": "0"})["HOMEBREW_NO_AUTO_UPDATE"], "0")
 
 
 class FindRunTest(unittest.TestCase):

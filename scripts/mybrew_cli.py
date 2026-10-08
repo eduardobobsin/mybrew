@@ -9,6 +9,8 @@ Options for install:
 
 Environment:
   MYBREW_TAP    tap to use (default: the only tapped */homebrew-mybrew)
+  HOMEBREW_NO_AUTO_UPDATE defaults to 1 for mybrew's own brew calls, since
+                mybrew refreshes its tap itself; set it to 0 to keep auto-update.
 """
 
 from __future__ import annotations
@@ -221,6 +223,11 @@ def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool) 
             run(*step, capture=False)
 
 
+def brew_env(env: dict) -> dict:
+    """The tap was just refreshed; skip brew's own auto-update unless asked for."""
+    return {"HOMEBREW_NO_AUTO_UPDATE": "1", **env}
+
+
 def main(argv: list[str]) -> int:
     if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__.strip())
@@ -234,6 +241,7 @@ def main(argv: list[str]) -> int:
     if unknown or not names:
         print(__doc__.strip(), file=sys.stderr)
         return 2
+    os.environ.update(brew_env(dict(os.environ)))
     try:
         tap = find_tap(Path(run("brew", "--repository").strip()), os.environ)
         if command == "plan":
