@@ -8,6 +8,8 @@ holds the validated bottle fields and each formula's mybrew_dependencies
 artifact is read here.
 """
 
+from __future__ import annotations
+
 import json
 import sys
 from datetime import datetime, timezone

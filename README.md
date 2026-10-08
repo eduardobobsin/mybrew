@@ -8,6 +8,16 @@ This repository is the **engine** (behavior). Each user runs their own **instanc
 named `<user>/homebrew-mybrew` that holds state: formulae, bottle registry, workflow config.
 See [eduardobobsin/homebrew-mybrew](https://github.com/eduardobobsin/homebrew-mybrew).
 
+## Client
+
+```bash
+brew tap <you>/mybrew && brew trust --tap <you>/mybrew
+mybrew install <formula>   # official bottle → brew; mybrew bottle → tap; neither → build on GitHub, then install
+mybrew plan <formula>      # where each piece would come from, without changing anything
+```
+
+Anything else (`mybrew list`, `mybrew upgrade`, ...) is passed to `brew`. Building needs `gh`, logged in.
+
 ## Actions
 
 | Action | Does |
@@ -27,7 +37,7 @@ See [eduardobobsin/homebrew-mybrew](https://github.com/eduardobobsin/homebrew-my
 | M1 Install | Custom tap installs that bottle, no compilation | done |
 | M2 Publish | S3 storage via OIDC, fully automated single formula | done |
 | M3 Dependencies | Recursive private fallback for dependencies without Intel bottles | done (calc→readline, jdupes) |
-| M4 Demand | `mybrew install foo` triggers a build on cache miss | |
+| M4 Demand | `mybrew install foo` triggers a build on cache miss | in progress |
 | M5 Platform | Template instance repo so others can deploy their own | |
 
 ## Development

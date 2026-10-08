@@ -12,6 +12,8 @@ Prints `formulae=<space-separated build order>` (GitHub Actions output format)
 and, if <plan.json> is given, writes the full plan there.
 """
 
+from __future__ import annotations
+
 import json
 import sys
 import urllib.request

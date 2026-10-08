@@ -12,6 +12,8 @@ Usage: import_formula.py <formula> <tap-dir> [<bottle-block-file>]
 Prints `version=<x>` and `path=<file>` lines (GitHub Actions output format).
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import re

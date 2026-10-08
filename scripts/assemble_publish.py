@@ -19,6 +19,8 @@ Prints GitHub Actions outputs:
   install=<space-separated install order of all non-official formulae>
 """
 
+from __future__ import annotations
+
 import hashlib
 import json
 import re
