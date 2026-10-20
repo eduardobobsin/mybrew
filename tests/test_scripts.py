@@ -64,6 +64,22 @@ class PrepareTest(unittest.TestCase):
         source = FORMULA.replace("  livecheck do", '  no_autobump! because: :requires_manual_review\n\n  livecheck do')
         self.assertNotIn("no_autobump!", prepare(source))
 
+    LLVM_PGO = "    pgo_build = build.stable? && build.bottle? && OS.mac? && !versioned_formula?\n"
+
+    def test_disables_llvm_pgo_build(self):
+        source = FORMULA.replace("  def install\n", "  def install\n" + self.LLVM_PGO)
+        result = prepare(source, name="llvm")
+        self.assertIn("    pgo_build = false # mybrew:", result)
+        self.assertNotIn("build.bottle?", result)
+
+    def test_edits_apply_only_to_their_formula(self):
+        source = FORMULA.replace("  def install\n", "  def install\n" + self.LLVM_PGO)
+        self.assertIn("build.bottle?", prepare(source, name="dos2unix"))
+
+    def test_missing_edit_target_fails_the_import(self):
+        with self.assertRaises(SystemExit):
+            prepare(FORMULA, name="llvm")
+
 
 SHA = "a" * 64
 

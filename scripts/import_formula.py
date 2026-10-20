@@ -7,6 +7,8 @@ SHA-256 checksum. Then:
 - the upstream `bottle do ... end` block is removed (it describes official
   bottles on Homebrew's registry), or replaced by a mybrew bottle block;
 - stanzas Homebrew only accepts in official taps (`no_autobump!`) are removed;
+- formula-specific edits in SOURCE_EDITS are applied (e.g. llvm's PGO
+  bottle build needs 12+ hours, past GitHub's 6-hour job limit);
 - the formula's aliases are recreated as Aliases/<alias> symlinks, because
   brew links opt/<alias> from them and build shims rely on that (pkgconf is
   invoked as opt/pkg-config);
@@ -32,6 +34,16 @@ RAW_URL = "https://raw.githubusercontent.com/Homebrew/homebrew-core/{commit}/{pa
 BOTTLE_BLOCK = re.compile(r"^(?P<indent>[ \t]*)bottle do\n.*?^(?P=indent)end\n(?:[ \t]*\n)?", re.M | re.S)
 LOCAL_PATCH = re.compile(r'^\s*file\s+"(Patches/[^"]+)"', re.M)
 OFFICIAL_ONLY = re.compile(r"^[ \t]*no_autobump!.*\n(?:[ \t]*\n)?", re.M)
+# Exact line replacements per formula. A missing line fails the import, so an
+# upstream change is noticed instead of silently building the slow way.
+SOURCE_EDITS = {
+    "llvm": [
+        (
+            "pgo_build = build.stable? && build.bottle? && OS.mac? && !versioned_formula?",
+            "pgo_build = false # mybrew: the three-stage PGO build overruns GitHub's 6-hour job limit",
+        ),
+    ],
+}
 # Where a bottle block goes when upstream had none: before the first of these.
 BOTTLE_ANCHOR = re.compile(r"^  (?:depends_on|uses_from_macos|on_\w+ do|resource|patch|def install)\b", re.M)
 
@@ -45,8 +57,12 @@ def strip_bottle_block(source: str) -> str:
     return prepare(source)
 
 
-def prepare(source: str, bottle_block: str | None = None) -> str:
+def prepare(source: str, bottle_block: str | None = None, name: str | None = None) -> str:
     source = OFFICIAL_ONLY.sub("", source)
+    for old, new in SOURCE_EDITS.get(name, []):
+        if source.count(old) != 1:
+            raise SystemExit(f"{name}: expected exactly one {old!r} to edit")
+        source = source.replace(old, new)
     replacement = f"{bottle_block}\n\n" if bottle_block else ""
     result, count = BOTTLE_BLOCK.subn(lambda _: replacement, source, count=1)
     if count or not bottle_block:
@@ -70,7 +86,7 @@ def import_formula(name: str, tap_dir: Path, bottle_block: str | None = None) ->
 
     dest = tap_dir / "Formula" / f"{name}.rb"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(prepare(source.decode(), bottle_block))
+    dest.write_text(prepare(source.decode(), bottle_block, name))
     write_aliases(name, meta.get("aliases", []), tap_dir)
     for patch in local_patches(source.decode()):
         target = tap_dir / patch
