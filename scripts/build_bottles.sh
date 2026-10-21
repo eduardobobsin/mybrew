@@ -11,6 +11,11 @@ export HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_AUTOR
 tap="$1" root_url="$2" out="$3" plan="$4"
 mkdir -p "$out"
 
+# The runner image ships rustup, whose proxies in ~/.cargo/bin come first in
+# PATH and have no default toolchain, so rust's `cargo run` test would call
+# them instead of the rustc it just built. Drop them for every build here.
+PATH=$(tr : '\n' <<<"$PATH" | grep -vxF "$HOME/.cargo/bin" | paste -sd: -)
+
 # A runner image may ship a core formula of the same name; brew refuses to
 # install one name from two taps. brew uninstall keeps the formula's config in
 # etc, and a stale config breaks builds that rewrite it (openldap's inreplace
