@@ -205,6 +205,10 @@ class PlanTest(unittest.TestCase):
         "zstd": api("1.5", ["lz4"], ["sonoma"], build=["not-in-api"]),
         "pkgconf": api("2.5", [], ["sonoma"]),
         "tool": api("1.0", [], ["arm64_sequoia"], build=["pkgconf"], test=["cmake"]),
+        "newer": api("3.0", ["fresh"], ["tahoe", "arm64_tahoe"]),
+        "fresh": api("1.0", [], ["tahoe"]),
+        "old": api("0.9", [], ["mojave"]),
+        "anywhere": api("2.0", [], ["all"]),
     }
 
     def plan(self, target, registry=None):
@@ -220,6 +224,15 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(result["order"], ["jdupes"])
         self.assertEqual(result["formulae"]["libjodycode"]["source"], "official")
         self.assertEqual(result["formulae"]["jdupes"]["mybrew_dependencies"], [])
+
+    def test_bottle_only_for_a_newer_macos_is_rebuilt(self):
+        result = self.plan("newer")
+        self.assertEqual(result["order"], ["fresh", "newer"])
+        self.assertEqual(result["formulae"]["newer"]["mybrew_dependencies"], ["fresh"])
+
+    def test_older_and_all_bottles_count_as_official(self):
+        self.assertEqual(self.plan("old")["formulae"]["old"]["source"], "official")
+        self.assertEqual(self.plan("anywhere")["formulae"]["anywhere"]["source"], "official")
 
     def test_current_registry_entry_is_reused(self):
         result = self.plan("calc", {"readline": {"version": "8.3"}})

@@ -30,9 +30,13 @@ from pathlib import Path
 
 API_URL = "https://formulae.brew.sh/api/formula/{name}.json"
 
-# Older Intel tags remain installable on newer macOS; arm64_* and Linux do not
-# help an Intel Mac.
-INTEL_MACOS_TAGS = {"tahoe", "sequoia", "sonoma", "ventura", "monterey", "big_sur", "catalina", "all"}
+# The macOS mybrew bottles are built for. brew pours a bottle only on its own
+# macOS or a newer one, so an official bottle counts only if it is tagged for
+# TAG or an older Intel macOS; tahoe-only, arm64_* and Linux bottles do not.
+TAG = "sequoia"
+INTEL_MACOS_ORDER = ["el_capitan", "sierra", "high_sierra", "mojave", "catalina", "big_sur",
+                     "monterey", "ventura", "sonoma", "sequoia", "tahoe"]
+INTEL_MACOS_TAGS = {"all", *INTEL_MACOS_ORDER[:INTEL_MACOS_ORDER.index(TAG) + 1]}
 
 
 @functools.lru_cache(maxsize=None)
