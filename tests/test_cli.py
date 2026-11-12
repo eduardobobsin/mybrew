@@ -1,5 +1,9 @@
+import os
+import shutil
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -9,7 +13,8 @@ import io  # noqa: E402
 
 from mybrew_cli import (  # noqa: E402
     DONE, FAILED, SKIPPED, WAITING, Display, MybrewError, active_runs, advance, brew_env, find_run, finished,
-    Scheduler, core_name, graph, install_steps, merge_plans, unique, fit, phase_of, render, spinner_frames, truncate,
+    Scheduler, core_name, graph, install_steps, merge_plans, unique, fit, phase_of, render, run_step, spinner_frames,
+    truncate,
 )
 import threading  # noqa: E402
 import time  # noqa: E402
@@ -91,6 +96,34 @@ class BrewEnvTest(unittest.TestCase):
 
     def test_respects_users_choice(self):
         self.assertEqual(brew_env({"HOMEBREW_NO_AUTO_UPDATE": "0"})["HOMEBREW_NO_AUTO_UPDATE"], "0")
+
+
+class RunStepTest(unittest.TestCase):
+    """A fake brew whose --cache is a temp dir holding a tool-selection cache."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        (self.tmp / "cache" / "tool-selection").mkdir(parents=True)
+        brew = self.tmp / "bin" / "brew"
+        brew.parent.mkdir()
+        brew.write_text(f'#!/bin/sh\n[ "$1" = --cache ] && echo "{self.tmp / "cache"}"\nexit 0\n')
+        brew.chmod(0o755)
+        self.path = os.environ["PATH"]
+        os.environ["PATH"] = f"{brew.parent}:{self.path}"
+
+    def tearDown(self):
+        os.environ["PATH"] = self.path
+        shutil.rmtree(self.tmp)
+
+    def test_uninstall_drops_brews_tool_cache(self):
+        with redirect_stdout(io.StringIO()):
+            run_step(["brew", "uninstall", "--formula", "--ignore-dependencies", "brotli"])
+        self.assertFalse((self.tmp / "cache" / "tool-selection").exists())
+
+    def test_install_keeps_it(self):
+        with redirect_stdout(io.StringIO()):
+            run_step(["brew", "install", "me/mybrew/brotli"])
+        self.assertTrue((self.tmp / "cache" / "tool-selection").exists())
 
 
 class FindRunTest(unittest.TestCase):

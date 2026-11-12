@@ -87,6 +87,20 @@ def run(*cmd: str, capture: bool = True) -> str:
     return result.stdout if capture else ""
 
 
+def run_step(step: list[str]) -> None:
+    """Run one install step out loud.
+
+    brew's own curl and git link core formulae (brotli, libnghttp2,
+    openssl@4...). brew caches which curl/git to run, keyed on the binary but
+    not its libraries, so after uninstalling one of those it keeps a curl dyld
+    can no longer load and the next download fails. Drop that cache so brew
+    probes again and falls back to the system tools."""
+    say(" ".join(step))
+    run(*step, capture=False)
+    if step[1] == "uninstall":
+        shutil.rmtree(Path(run("brew", "--cache").strip()) / "tool-selection", ignore_errors=True)
+
+
 def find_tap(brew_repository: Path, env: dict) -> Tap:
     taps = brew_repository / "Library" / "Taps"
     if env.get("MYBREW_TAP"):
@@ -687,8 +701,7 @@ def cmd_install(tap: Tap, cellar: Path, formulae: list[str], allow_build: bool, 
                 say(f"Replacing {name} {current.get('version', '')} from {current.get('tap', '?')} "
                     f"with {the_plan['formulae'][name]['version']} from {tap.name}"
                     + (f" (used by: {', '.join(users)})" if users else ""))
-            say(" ".join(step))
-            run(*step, capture=False)
+            run_step(step)
 
 
 def third_party_deps(formula: str, brew_repository: Path | None = None) -> tuple[list[str], list[str]]:
@@ -752,8 +765,7 @@ def cmd_third_party(tap: Tap, cellar: Path, formula: str, allow_build: bool, par
     installed = lambda name: installed_kegs(cellar, name)  # noqa: E731
     steps = unique([step for p in plans for step in install_steps(p, tap.name, installed, replace)])
     for step in steps + [["brew", "install", formula]]:
-        say(" ".join(step))
-        run(*step, capture=False)
+        run_step(step)
 
 
 def brew_env(env: dict) -> dict:
