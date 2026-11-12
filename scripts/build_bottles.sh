@@ -20,9 +20,15 @@ PATH=$(tr : '\n' <<<"$PATH" | grep -vxF "$HOME/.cargo/bin" | paste -sd: -)
 # install one name from two taps. brew uninstall keeps the formula's config in
 # etc, and a stale config breaks builds that rewrite it (openldap's inreplace
 # of etc/openldap/slapd.conf), so on this disposable runner drop it too.
+# The runner's brewed curl and git link against core formulae (brotli,
+# libnghttp2, openssl@4...). brew caches which curl/git to run, keyed on the
+# binary but not its libraries, so after removing one it keeps a curl dyld can
+# no longer load and every download fails. Drop that cache so brew probes
+# again and falls back to the system tools.
 clear_name() {
   if brew list --formula --versions "$1" >/dev/null 2>&1; then
     brew uninstall --formula --ignore-dependencies --force "$1"
+    rm -rf "$(brew --cache)/tool-selection"
     local etc
     etc="$(brew --prefix)/etc"
     for dir in "$etc/$1" "$etc/${1%%@*}"; do
